@@ -62,6 +62,7 @@ class G1_29_ArmIK:
             "left_middle_2_joint",
             "left_index_2_joint",
             "left_ring_2_joint",
+            "left_little_2_joint",
             "right_thumb_1_joint",
             "right_thumb_2_joint",
             "right_thumb_3_joint",
@@ -73,6 +74,7 @@ class G1_29_ArmIK:
             "right_middle_2_joint",
             "right_index_2_joint",
             "right_ring_2_joint",
+            "right_little_2_joint",
         ]
 
         self.reduced_robot = self.robot.buildReducedRobot(
@@ -394,6 +396,9 @@ if __name__ == "__main__":
 
         except Exception as e:
             print(f"Error in reading: {e}")
+
+        _delta_pos = np.array([0, 0, 0])
+        _delta_rot = np.eye(3)
 
         R_tf_target.translation = zero_pose + _delta_pos
         R_tf_target.rotation = _delta_rot
