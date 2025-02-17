@@ -15,8 +15,23 @@ parent2_dir = os.path.dirname(
 sys.path.append(parent2_dir)
 
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
-from teleop.oculus.oculus_reader import OculusReader
 from scipy.spatial.transform import Rotation
+
+import sys
+import time
+import argparse
+from teleop.vive_tracker.track import ViveTrackerModule
+from IPython import embed
+from teleop.vive_tracker.fairmotion_vis import camera
+from teleop.vive_tracker.fairmotion_ops import conversions, math as fairmotion_math
+from teleop.vive_tracker.origin_init import (
+    euler_to_matrix,
+    matrix_to_euler,
+    create_transformation,
+    decompose_transformation,
+    transform_pose,
+)
+import numpy as np
 
 
 class G1_29_ArmIK:
@@ -293,35 +308,6 @@ class G1_29_ArmIK:
 
             self.init_data = sol_q
 
-            J = pin.computeFrameJacobian(
-                self.reduced_robot.model,
-                self.reduced_robot.data,
-                current_lr_arm_motor_q,
-                self.L_hand_id,
-            )
-            J_l = J[:, :7]
-
-            F_desired = np.array([0, 0, 150, 0, 0, 0])
-            F_ee = np.linalg.pinv(J_l.T) @ current_lr_arm_motor_tau_est[:7]
-
-            K_p = np.diag(
-                [0, 0, 0.0001, 0, 0, 0]
-            )  # Stiffness (adjust based on desired compliance)
-            K_d = np.diag([0, 0, 0.001, 0, 0, 0])  # Damping (critical for stability)
-
-            # Compute velocity of the end-effector (approximation, replace if available)
-            v_ee = (
-                J_l @ current_lr_arm_motor_dq[:7]
-            )  # End-effector velocity in task space
-
-            # Compute impedance force
-            # F_control = K_p @ (F_desired - F_ee) - K_d @ v_ee
-            F_control = K_p @ (F_desired - F_ee)
-
-            # Compute the torque using the Jacobian transpose
-            tau_impedance = J_l.T @ F_control
-
-            # Compute gravity compensation torque
             sol_tauff = pin.rnea(
                 self.reduced_robot.model,
                 self.reduced_robot.data,
@@ -329,20 +315,13 @@ class G1_29_ArmIK:
                 v,
                 np.zeros(self.reduced_robot.model.nv),
             )
-            print("F_ee", F_ee)
-            print(tau_impedance)
-            print("prev", sol_tauff)
-            # Apply impedance control
-            sol_tauff[:7] += tau_impedance
-
-            print("post", sol_tauff)
 
             if self.Visualization:
                 self.vis.display(sol_q)  # for visualization
 
             return sol_q, sol_tauff
 
-        except Exception as e: 
+        except Exception as e:
             print(f"ERROR in convergence, plotting debug info.{e}")
 
             sol_q = self.opti.debug.value(self.var_q)
@@ -377,8 +356,6 @@ class G1_29_ArmIK:
 if __name__ == "__main__":
     arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization=True)
 
-    oculus_reader = OculusReader()
-
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
@@ -394,48 +371,48 @@ if __name__ == "__main__":
     noise_amplitude_translation = 0.001
     noise_amplitude_rotation = 0.1
 
-    init_pos = None
-    init_rot = None
+    init_pose_tracker_1 = None
+    init_pose_tracker_2 = None
     _delta_rot = None
     _delta_pos = None
 
-    zero_pose = np.array([0.25, -0.25, 0.1])
+    zero_pose = np.array([0.25, 0.25, 0.1])
 
-    oculus_readings = oculus_reader.get_transformations_and_buttons()
+    v_tracker = ViveTrackerModule()
+    v_tracker.print_discovered_objects()
+    tracker_1 = v_tracker.devices["tracker_1"]
+    tracker_2 = v_tracker.devices["tracker_2"]
+
     time.sleep(1)
 
     while True:
         try:
-            oculus_readings = oculus_reader.get_transformations_and_buttons()
-            teleop_rot = oculus_readings[0]["r"][:3, :3]
-            trans = oculus_readings[0]["r"][:3, 3]
-            trans = np.array([-trans[2], -trans[0], trans[1]])
+            # Get pose data for the tracker device and format as a string
+            tracker_1_pose = np.array([val for val in tracker_2.get_pose_euler()])
+            tracker_2_pose = np.array([val for val in tracker_1.get_pose_euler()])
 
-            index_finger = oculus_readings[1]["rightTrig"][0]
-            thumb_finger_1 = oculus_readings[1]["RThU"]
-            thumb_finger_2 = oculus_readings[1]["A"]
-            middle_finger = oculus_readings[1]["rightGrip"][0]
+            if init_pose_tracker_1 is None:
+                init_pose_tracker_1 = tracker_1_pose
+                init_pose_tracker_1[3:] = np.array([0, 0, 90.0])
+            if init_pose_tracker_2 is None:
+                init_pose_tracker_2 = tracker_2_pose
+                init_pose_tracker_2[3:] = np.array([0, 0, 90.0])
 
-            euler_rot = Rotation.from_matrix(teleop_rot).as_euler("XYZ")
-            euler_rot = np.array([-euler_rot[2], -euler_rot[0], euler_rot[1]])
+            T_ref = create_transformation(init_pose_tracker_1)
+            T_ref_inv = np.linalg.inv(T_ref)
 
-            if init_rot is None:
-                init_rot = euler_rot
+            tracker_1_pose = transform_pose(tracker_1_pose, T_ref_inv)
 
-            _delta_rot = Rotation.from_euler("XYZ", (euler_rot - init_rot)).as_matrix()
+            T_ref = create_transformation(init_pose_tracker_2)
+            T_ref_inv = np.linalg.inv(T_ref)
 
-            if init_pos is None:
-                init_pos = trans
-
-            _delta_pos = trans - init_pos
-
-            print(f"Delta Pos: {_delta_pos}, Delta Rot: {_delta_rot}")
+            tracker_2_pose = transform_pose(tracker_2_pose, T_ref_inv)
 
         except Exception as e:
             print(f"Error in reading: {e}")
 
-        _delta_pos = np.array([0, 0, 0])
-        _delta_rot = np.eye(3)
+        _delta_pos = tracker_1_pose[:3]
+        _delta_rot = Rotation.from_euler("xyz", tracker_1_pose[3:], degrees=True).as_matrix()
 
         L_tf_target.translation = zero_pose + _delta_pos
         L_tf_target.rotation = _delta_rot

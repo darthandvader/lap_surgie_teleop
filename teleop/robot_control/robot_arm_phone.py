@@ -346,93 +346,53 @@ class G1_29_JointIndex(IntEnum):
 
 
 if __name__ == "__main__":
-    from robot_arm_ik import G1_29_ArmIK
+    from robot_arm_ik_phone import G1_29_ArmIK
     import pinocchio as pin
 
-    from teleop.oculus.oculus_reader import OculusReader
+    from teleop.phone_tracker.iphone_pos_tracker import iPhonePosTracker
 
+    phoneTracker = iPhonePosTracker()
     arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization=False)
     arm = G1_29_ArmController()
-    # arm_ik = H1_2_ArmIK(Unit_Test = True, Visualization = False)
-    # arm = H1_2_ArmController()
+    # arm_ik = H1_2_ArmIK(Unit_Test = True, Visualization = True)
 
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, +0.2, 0.1]),
+        np.array([0.25, +0.25, 0.1]),
     )
 
     R_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, -0.2, 0.1]),
+        np.array([0.25, -0.25, 0.1]),
     )
 
-    init_pos = None
-    init_rot = None
-    _delta_rot = None
-    _delta_pos = None
+    R_tf_init = R_tf_target.copy()
 
-    zero_pose = np.array([0.25, 0.2, 0.1])
-
-    rotation_speed = 0.005  # Rotation speed in radians per iteration
-    q_target = np.zeros(35)
-    tauff_target = np.zeros(35)
-
-    oculus_reader = OculusReader()
-    oculus_readings = oculus_reader.get_transformations_and_buttons()
-    time.sleep(1)
+    rotation_speed = 0.005
+    noise_amplitude_translation = 0.001
+    noise_amplitude_rotation = 0.01
 
     user_input = input(
-        "Please enter the start signal (enter 's' to start the subsequent program): \n"
+        "Please enter the start signal (enter 's' to start the subsequent program):\n"
     )
     if user_input.lower() == "s":
-        step = 0
-        arm.speed_gradual_max()
-
         while True:
-            try:
-                oculus_readings = oculus_reader.get_transformations_and_buttons()
-                teleop_rot = oculus_readings[0]["r"][:3, :3]
-                trans = oculus_readings[0]["r"][:3, 3]
-                trans = np.array([-trans[2], -trans[0], trans[1]])
+            phone_tf = phoneTracker.get_tf()
 
-                index_finger = oculus_readings[1]["rightTrig"][0]
-                thumb_finger_1 = oculus_readings[1]["RThU"]
-                thumb_finger_2 = oculus_readings[1]["A"]
-                middle_finger = oculus_readings[1]["rightGrip"][0]
-
-                euler_rot = Rotation.from_matrix(teleop_rot).as_euler("XYZ")
-                euler_rot = np.array([-euler_rot[2], -euler_rot[0], euler_rot[1]])
-
-                if init_rot is None:
-                    init_rot = euler_rot
-
-                _delta_rot = Rotation.from_euler(
-                    "XYZ", (euler_rot - init_rot)
-                ).as_matrix()
-
-                if init_pos is None:
-                    init_pos = trans
-
-                _delta_pos = trans - init_pos
-
-                # print(f"Delta Pos: {_delta_pos}, Delta Rot: {_delta_rot}")
-            except Exception as e:
-                print("Error reading oculus data", e)
+            R_tf_target = (
+                R_tf_init @ phone_tf
+            )  # phone pose compounded with init position
 
             current_lr_arm_q = arm.get_current_dual_arm_q()
             current_lr_arm_dq = arm.get_current_dual_arm_dq()
             current_lr_arm_tau_est = arm.get_current_dual_arm_tau_est()
 
-            L_tf_target.translation = zero_pose + _delta_pos
-            L_tf_target.rotation = _delta_rot
-
             sol_q, sol_tauff = arm_ik.solve_ik(
                 L_tf_target.homogeneous,
-                R_tf_target.homogeneous,
+                R_tf_target,
                 current_lr_arm_q,
-                current_lr_arm_dq,
-                current_lr_arm_tau_est
+                current_lr_arm_dq
             )
             arm.ctrl_dual_arm(sol_q, sol_tauff)
             time.sleep(0.01)
