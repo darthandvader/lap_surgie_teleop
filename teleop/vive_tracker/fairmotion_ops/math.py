@@ -32,9 +32,7 @@ def slerp(R1, R2, t):
     Spherical linear interpolation (https://en.wikipedia.org/wiki/Slerp)
     between R1 and R2 with parameter t, 0 ≤ t ≤ 1
     """
-    return np.dot(
-        R1, conversions.A2R(t * conversions.R2A(np.dot(R1.transpose(), R2)))
-    )
+    return np.dot(R1, conversions.A2R(t * conversions.R2A(np.dot(R1.transpose(), R2))))
 
 
 def lerp(v0, v1, t):
@@ -110,7 +108,9 @@ def project_rotation_1D(R, axis):
     when a rotational axis is given
     """
     Q, angle = quaternion.Q_closest(
-        conversions.R2Q(R), [1.0, 0.0, 0.0, 0.0], axis,
+        conversions.R2Q(R),
+        [1.0, 0.0, 0.0, 0.0],
+        axis,
     )
     return angle
 
@@ -229,7 +229,7 @@ def lerp_from_paired_list(x, xy_pairs, clamp=True):
     elif x >= xN:
         return yN
     else:
-        """ Otherwise, return linearly interpolated values """
+        """Otherwise, return linearly interpolated values"""
         for i in range(len(xy_pairs) - 1):
             x1, y1 = xy_pairs[i]
             x2, y2 = xy_pairs[i + 1]

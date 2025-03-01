@@ -17,9 +17,6 @@ sys.path.append(parent2_dir)
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
 from scipy.spatial.transform import Rotation
 
-import sys
-import time
-import argparse
 from teleop.vive_tracker.track import ViveTrackerModule
 from IPython import embed
 from teleop.vive_tracker.fairmotion_vis import camera
@@ -31,7 +28,11 @@ from teleop.vive_tracker.origin_init import (
     decompose_transformation,
     transform_pose,
 )
-import numpy as np
+
+import hid
+
+VID = 0x06C2  # Replace with your VID
+PID = 0x0036  # Replace with your PID
 
 
 class G1_29_ArmIK:
@@ -66,6 +67,7 @@ class G1_29_ArmIK:
             "waist_yaw_joint",
             "waist_roll_joint",
             "waist_pitch_joint",
+            "left_wrist_pitch_joint",
             "left_thumb_1_joint",
             "left_thumb_2_joint",
             "left_thumb_3_joint",
@@ -197,7 +199,7 @@ class G1_29_ArmIK:
         self.opti.solver("ipopt", opts)
 
         self.init_data = np.zeros(self.reduced_robot.model.nq)
-        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 14)
+        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 13)
         self.vis = None
 
         if self.Visualization:
@@ -316,6 +318,39 @@ class G1_29_ArmIK:
                 np.zeros(self.reduced_robot.model.nv),
             )
 
+            # # right arm
+            # J = pin.computeFrameJacobian(
+            #     self.reduced_robot.model,
+            #     self.reduced_robot.data,
+            #     current_lr_arm_motor_q,
+            #     self.R_hand_id,
+            # )
+            # J_r = J[:, 6:]
+            # F_desired = np.array([150, 150, 150, 0, 0, 0])
+            # F_ee = np.linalg.pinv(J_r.T) @ current_lr_arm_motor_tau_est[6:]
+            # K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
+            # F_control = K_p @ (F_desired - F_ee)
+            # # Compute the torque using the Jacobian transpose
+            # tau_impedance = J_r.T @ F_control
+            # sol_tauff[6:] += tau_impedance
+
+            # # left arm
+            # J = pin.computeFrameJacobian(
+            #     self.reduced_robot.model,
+            #     self.reduced_robot.data,
+            #     current_lr_arm_motor_q,
+            #     self.L_hand_id,
+            # )
+            # J_l = J[:, :6]
+            # F_desired = np.array([150, 150, 150, 0, 0, 0])
+            # F_ee = np.linalg.pinv(J_l.T) @ current_lr_arm_motor_tau_est[:6]
+            # K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
+            # # Compute impedance force
+            # F_control = K_p @ (F_desired - F_ee)
+            # # Compute the torque using the Jacobian transpose
+            # tau_impedance = J_l.T @ F_control
+            # sol_tauff[:6] += tau_impedance
+
             if self.Visualization:
                 self.vis.display(sol_q)  # for visualization
 
@@ -356,15 +391,19 @@ class G1_29_ArmIK:
 if __name__ == "__main__":
     arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization=True)
 
+    # Open the foot pedal
+    device = hid.device()
+    device.open(VID, PID)
+
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, +0.25, 0.1]),
+        np.array([0.25, +0.2, 0.2]),
     )
 
     R_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, -0.25, 0.1]),
+        np.array([0.25, -0.2, 0.2]),
     )
 
     rotation_speed = 0.005
@@ -373,49 +412,196 @@ if __name__ == "__main__":
 
     init_pose_tracker_1 = None
     init_pose_tracker_2 = None
-    _delta_rot = None
-    _delta_pos = None
+    _delta_pos_l = np.zeros(3)
+    _delta_rot_l = np.zeros(3)
+    _delta_pos_r = np.zeros(3)
+    _delta_rot_r = np.zeros(3)
+    prev_delta_pos_l = None
+    prev_delta_rot_l = None
+    prev_delta_pos_r = None
+    prev_delta_rot_r = None
+    init_delta_flag = True
+    track_clutch_button = False
+    track_camera_button = False
 
-    zero_pose = np.array([0.25, 0.25, 0.1])
+    zero_pose_l = np.array([0.25, 0.2, 0.2])
+    zero_pose_r = np.array([0.25, -0.2, 0.2])
+
+    time.sleep(2)
 
     v_tracker = ViveTrackerModule()
     v_tracker.print_discovered_objects()
     tracker_1 = v_tracker.devices["tracker_1"]
     tracker_2 = v_tracker.devices["tracker_2"]
 
-    time.sleep(1)
+    clutch_pressed = False
+    camera_pressed = False
+
+    scaling_factor = 0.5
+    threshold = 0.15
 
     while True:
         try:
+            # Read device input
+            clutch_pressed, camera_pressed = False, False
+            input_data = 255 - device.read(64)[1]
+            clutch_pressed = input_data in {1, 3}
+            camera_pressed = input_data in {2, 3}
+
             # Get pose data for the tracker device and format as a string
-            tracker_1_pose = np.array([val for val in tracker_2.get_pose_euler()])
-            tracker_2_pose = np.array([val for val in tracker_1.get_pose_euler()])
+            tracker_1_pose = np.array([val for val in tracker_1.get_pose_euler()])
+            tracker_2_pose = np.array([val for val in tracker_2.get_pose_euler()])
 
             if init_pose_tracker_1 is None:
                 init_pose_tracker_1 = tracker_1_pose
-                init_pose_tracker_1[3:] = np.array([0, 0, 90.0])
+                init_pose_tracker_1[3:] = np.array([0, 0, 90])
             if init_pose_tracker_2 is None:
                 init_pose_tracker_2 = tracker_2_pose
-                init_pose_tracker_2[3:] = np.array([0, 0, 90.0])
+                init_pose_tracker_2[3:] = np.array([0, 0, 90])
 
-            T_ref = create_transformation(init_pose_tracker_1)
-            T_ref_inv = np.linalg.inv(T_ref)
+            T_ref_inv_1 = np.linalg.inv(create_transformation(init_pose_tracker_1))
+            T_ref_inv_2 = np.linalg.inv(create_transformation(init_pose_tracker_2))
 
-            tracker_1_pose = transform_pose(tracker_1_pose, T_ref_inv)
+            tracker_1_pose = np.array(transform_pose(tracker_1_pose, T_ref_inv_1))
+            tracker_2_pose = np.array(transform_pose(tracker_2_pose, T_ref_inv_2))
 
-            T_ref = create_transformation(init_pose_tracker_2)
-            T_ref_inv = np.linalg.inv(T_ref)
+            tracker_1_pose[3:] = [
+                tracker_1_pose[5],
+                -tracker_1_pose[3],
+                -tracker_1_pose[4],
+            ]
+            tracker_1_pose[:3] = [
+                -tracker_1_pose[1],
+                -tracker_1_pose[2],
+                tracker_1_pose[0],
+            ]
 
-            tracker_2_pose = transform_pose(tracker_2_pose, T_ref_inv)
+            tracker_2_pose[3:] = [
+                -tracker_2_pose[5],
+                -tracker_2_pose[3],
+                tracker_2_pose[4],
+            ]
+            tracker_2_pose[:3] = [
+                -tracker_2_pose[1],
+                -tracker_2_pose[2],
+                tracker_2_pose[0],
+            ]
+
+            if not clutch_pressed:
+                curr_delta_pos_r, curr_delta_rot_r = (
+                    tracker_2_pose[:3],
+                    tracker_2_pose[3:],
+                )
+            if not camera_pressed:
+                curr_delta_pos_l, curr_delta_rot_l = (
+                    tracker_1_pose[:3],
+                    tracker_1_pose[3:],
+                )
+
+            if track_clutch_button and not clutch_pressed:
+                prev_delta_pos_r, prev_delta_rot_r = (
+                    curr_delta_pos_r.copy(),
+                    curr_delta_rot_r.copy(),
+                )
+                print("clutch accessed")
+                track_clutch_button = False
+            if track_camera_button and not camera_pressed:
+                prev_delta_pos_l, prev_delta_rot_l = (
+                    curr_delta_pos_l.copy(),
+                    curr_delta_rot_l.copy(),
+                )
+                print("camera accessed")
+                track_camera_button = False
+
+            # if not init_delta_flag:
+            #     if camera_pressed:
+            #         threshold = 0.75 / scaling_factor
+            #     else:
+            #         threshold = 0.75
+            #     if np.any(np.abs(curr_delta_pos_r) > threshold) or np.any(
+            #         np.abs(curr_delta_pos_l) > threshold
+            #     ):
+            #         curr_delta_pos_l, curr_delta_rot_l = (
+            #             prev_delta_pos_l.copy(),
+            #             prev_delta_rot_l.copy(),
+            #         )
+            #         curr_delta_pos_r, curr_delta_rot_r = (
+            #             prev_delta_pos_r.copy(),
+            #             prev_delta_rot_r.copy(),
+            #         )
+
+            # if camera_pressed:
+            #     curr_delta_pos_r[2] = max(curr_delta_pos_r[2], -0.75/scaling_factor)
+            #     curr_delta_pos_l[2] = max(curr_delta_pos_l[2], -0.75/scaling_factor)
+            # else:
+            #     curr_delta_pos_r[2] = max(curr_delta_pos_r[2], -0.75)
+            #     curr_delta_pos_l[2] = max(curr_delta_pos_l[2], -0.75)
+            if init_delta_flag:
+                prev_delta_pos_l, prev_delta_rot_l = (
+                    curr_delta_pos_l.copy(),
+                    curr_delta_rot_l.copy(),
+                )
+                prev_delta_pos_r, prev_delta_rot_r = (
+                    curr_delta_pos_r.copy(),
+                    curr_delta_rot_r.copy(),
+                )
+                init_delta_flag = False
+
+            if clutch_pressed:
+                curr_delta_pos_r, curr_delta_rot_r = (
+                    prev_delta_pos_r.copy(),
+                    prev_delta_rot_r.copy(),
+                )
+                track_clutch_button = True
+            if camera_pressed:
+                curr_delta_pos_l, curr_delta_rot_l = (
+                    prev_delta_pos_l.copy(),
+                    prev_delta_rot_l.copy(),
+                )
+                track_camera_button = True
+
+            # if camera_pressed:
+            #     print("Camera pressed")
+            #     _delta_pos_l += (curr_delta_pos_l - prev_delta_pos_l) * scaling_factor
+            #     _delta_rot_l += (curr_delta_rot_l - prev_delta_rot_l) * scaling_factor
+            #     _delta_pos_r += (curr_delta_pos_r - prev_delta_pos_r) * scaling_factor
+            #     _delta_rot_r += (curr_delta_rot_r - prev_delta_rot_r) * scaling_factor
+            # else:
+            #     _delta_pos_l += curr_delta_pos_l - prev_delta_pos_l
+            #     _delta_rot_l += curr_delta_rot_l - prev_delta_rot_l
+            #     _delta_pos_r += curr_delta_pos_r - prev_delta_pos_r
+            #     _delta_rot_r += curr_delta_rot_r - prev_delta_rot_r
+
+            _delta_pos_l += curr_delta_pos_l - prev_delta_pos_l
+            _delta_rot_l += curr_delta_rot_l - prev_delta_rot_l
+            _delta_pos_r += curr_delta_pos_r - prev_delta_pos_r
+            _delta_rot_r += curr_delta_rot_r - prev_delta_rot_r
+
+            _delta_rot_r = np.array([60.0, -15.0, 0.0])
+
+            prev_delta_pos_l, prev_delta_rot_l = (
+                curr_delta_pos_l.copy(),
+                curr_delta_rot_l.copy(),
+            )
+            prev_delta_pos_r, prev_delta_rot_r = (
+                curr_delta_pos_r.copy(),
+                curr_delta_rot_r.copy(),
+            )
+
+            print(_delta_pos_l, _delta_rot_l, _delta_pos_r, _delta_rot_r)
+
+            L_tf_target.translation = zero_pose_l + _delta_pos_l
+            L_tf_target.rotation = Rotation.from_euler(
+                "xyz", _delta_rot_l, degrees=True
+            ).as_matrix()
+
+            R_tf_target.translation = zero_pose_r + _delta_pos_r
+            R_tf_target.rotation = Rotation.from_euler(
+                "xyz", _delta_rot_r, degrees=True
+            ).as_matrix()
 
         except Exception as e:
             print(f"Error in reading: {e}")
-
-        _delta_pos = tracker_1_pose[:3]
-        _delta_rot = Rotation.from_euler("xyz", tracker_1_pose[3:], degrees=True).as_matrix()
-
-        L_tf_target.translation = zero_pose + _delta_pos
-        L_tf_target.rotation = _delta_rot
 
         arm_ik.solve_ik(L_tf_target.homogeneous, R_tf_target.homogeneous)
 

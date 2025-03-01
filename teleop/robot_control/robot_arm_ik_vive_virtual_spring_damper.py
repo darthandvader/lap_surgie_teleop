@@ -15,8 +15,6 @@ parent2_dir = os.path.dirname(
 sys.path.append(parent2_dir)
 
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
-from teleop.oculus.oculus_reader import OculusReader
-from scipy.spatial.transform import Rotation
 
 
 class G1_29_ArmIK:
@@ -28,11 +26,11 @@ class G1_29_ArmIK:
 
         if not self.Unit_Test:
             self.robot = pin.RobotWrapper.BuildFromURDF(
-                "../assets/g1/g1_inspire_gen4.urdf", "../assets/g1/"
+                "../assets/g1/g1_body29_hand14.urdf", "../assets/g1/"
             )
         else:
             self.robot = pin.RobotWrapper.BuildFromURDF(
-                "../../assets/g1/g1_inspire_gen4.urdf", "../../assets/g1/"
+                "../../assets/g1/g1_body29_hand14.urdf", "../../assets/g1/"
             )  # for test
 
         self.mixed_jointsToLockIDs = [
@@ -51,30 +49,21 @@ class G1_29_ArmIK:
             "waist_yaw_joint",
             "waist_roll_joint",
             "waist_pitch_joint",
-            "left_thumb_1_joint",
-            "left_thumb_2_joint",
-            "left_thumb_3_joint",
-            "left_thumb_4_joint",
-            "left_middle_1_joint",
-            "left_index_1_joint",
-            "left_ring_1_joint",
-            "left_little_1_joint",
-            "left_middle_2_joint",
-            "left_index_2_joint",
-            "left_ring_2_joint",
-            "left_little_2_joint",
-            "right_thumb_1_joint",
-            "right_thumb_2_joint",
-            "right_thumb_3_joint",
-            "right_thumb_4_joint",
-            "right_middle_1_joint",
-            "right_index_1_joint",
-            "right_ring_1_joint",
-            "right_little_1_joint",
-            "right_middle_2_joint",
-            "right_index_2_joint",
-            "right_ring_2_joint",
-            "right_little_2_joint",
+            "left_wrist_pitch_joint",
+            "left_hand_thumb_0_joint",
+            "left_hand_thumb_1_joint",
+            "left_hand_thumb_2_joint",
+            "left_hand_middle_0_joint",
+            "left_hand_middle_1_joint",
+            "left_hand_index_0_joint",
+            "left_hand_index_1_joint",
+            "right_hand_thumb_0_joint",
+            "right_hand_thumb_1_joint",
+            "right_hand_thumb_2_joint",
+            "right_hand_index_0_joint",
+            "right_hand_index_1_joint",
+            "right_hand_middle_0_joint",
+            "right_hand_middle_1_joint",
         ]
 
         self.reduced_robot = self.robot.buildReducedRobot(
@@ -182,7 +171,7 @@ class G1_29_ArmIK:
         self.opti.solver("ipopt", opts)
 
         self.init_data = np.zeros(self.reduced_robot.model.nq)
-        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 14)
+        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 13)
         self.vis = None
 
         if self.Visualization:
@@ -235,7 +224,7 @@ class G1_29_ArmIK:
                             linewidth=axis_width,
                             vertexColors=True,
                         ),
-                    ),
+                    )
                 )
 
     # If the robot arm is not the same size as your arm :)
@@ -278,105 +267,120 @@ class G1_29_ArmIK:
         self.opti.set_value(self.param_tf_r, right_wrist)
         self.opti.set_value(self.var_q_last, self.init_data)  # for smooth
 
-        try:
-            sol = self.opti.solve()
-            # sol = self.opti.solve_limited()
+        # try:
+        sol = self.opti.solve()
+        # sol = self.opti.solve_limited()
 
-            sol_q = self.opti.value(self.var_q)
-            self.smooth_filter.add_data(sol_q)
-            sol_q = self.smooth_filter.filtered_data
+        sol_q = self.opti.value(self.var_q)
+        self.smooth_filter.add_data(sol_q)
+        sol_q = self.smooth_filter.filtered_data
 
-            if current_lr_arm_motor_dq is not None:
-                v = current_lr_arm_motor_dq * 0.0
-            else:
-                v = (sol_q - self.init_data) * 0.0
+        if current_lr_arm_motor_dq is not None:
+            v = current_lr_arm_motor_dq * 0.0
+        else:
+            v = (sol_q - self.init_data) * 0.0
 
-            self.init_data = sol_q
+        self.init_data = sol_q
 
-            J = pin.computeFrameJacobian(
-                self.reduced_robot.model,
-                self.reduced_robot.data,
-                current_lr_arm_motor_q,
-                self.L_hand_id,
-            )
-            J_l = J[:, :7]
+        sol_tauff = pin.rnea(
+            self.reduced_robot.model,
+            self.reduced_robot.data,
+            sol_q,
+            v,
+            np.zeros(self.reduced_robot.model.nv),
+        )
 
-            F_desired = np.array([0, 0, 150, 0, 0, 0])
-            F_ee = np.linalg.pinv(J_l.T) @ current_lr_arm_motor_tau_est[:7]
+        # right arm
+        J = pin.computeFrameJacobian(
+            self.reduced_robot.model,
+            self.reduced_robot.data,
+            current_lr_arm_motor_q,
+            self.R_hand_id,
+        )
+        J_r = J[:, 6:]
+        F_desired = np.array([150, 150, 150, 0, 0, 0])
+        F_ee = np.linalg.pinv(J_r.T) @ current_lr_arm_motor_tau_est[6:]
+        K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
+        F_control = K_p @ (F_desired - F_ee)
+        # Compute the torque using the Jacobian transpose
+        tau_impedance = J_r.T @ F_control
+        # sol_tauff[6:] += tau_impedance
 
-            K_p = np.diag(
-                [0, 0, 0.0001, 0, 0, 0]
-            )  # Stiffness (adjust based on desired compliance)
-            K_d = np.diag([0, 0, 0.001, 0, 0, 0])  # Damping (critical for stability)
+        # left arm
+        J = pin.computeFrameJacobian(
+            self.reduced_robot.model,
+            self.reduced_robot.data,
+            current_lr_arm_motor_q,
+            self.L_hand_id,
+        )
+        J_l = J[:, :6]
+        F_desired = np.array([150, 150, 150, 0, 0, 0])
+        F_ee = np.linalg.pinv(J_l.T) @ current_lr_arm_motor_tau_est[:6]
+        K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
+        # Compute impedance force
+        F_control = K_p @ (F_desired - F_ee)
+        # Compute the torque using the Jacobian transpose
+        tau_impedance = J_l.T @ F_control
+        # sol_tauff[:6] += tau_impedance
+        
+        self.oMf_eef_l_link = self.reduced_robot.model.getFrameId("left_hand_palm_joint")
+        self.oMf_eef_r_link = self.reduced_robot.model.getFrameId("right_hand_palm_joint")
 
-            # Compute velocity of the end-effector (approximation, replace if available)
-            v_ee = (
-                J_l @ current_lr_arm_motor_dq[:7]
-            )  # End-effector velocity in task space
+        # Run forward kinematics
+        pin.forwardKinematics(self.reduced_robot.model, self.reduced_robot.data, current_lr_arm_motor_q)
 
-            # Compute impedance force
-            # F_control = K_p @ (F_desired - F_ee) - K_d @ v_ee
-            F_control = K_p @ (F_desired - F_ee)
+        # Update frame placement for the left hand
+        pin.updateFramePlacement(self.reduced_robot.model, self.reduced_robot.data, self.oMf_eef_l_link)
+        left_hand_pos = self.reduced_robot.data.oMf[self.oMf_eef_l_link]
 
-            # Compute the torque using the Jacobian transpose
-            tau_impedance = J_l.T @ F_control
+        # Update frame placement for the right hand
+        pin.updateFramePlacement(self.reduced_robot.model, self.reduced_robot.data, self.oMf_eef_r_link)
+        right_hand_pos = self.reduced_robot.data.oMf[self.oMf_eef_r_link]
 
-            # Compute gravity compensation torque
-            sol_tauff = pin.rnea(
-                self.reduced_robot.model,
-                self.reduced_robot.data,
-                sol_q,
-                v,
-                np.zeros(self.reduced_robot.model.nv),
-            )
-            # print("F_ee", F_ee)
-            # print(tau_impedance)
-            # print("prev", sol_tauff)
+        print("Left Hand Position:", left_hand_pos.translation)
+        print("Right Hand Position:", right_hand_pos.translation)
 
-            # Apply impedance control
-            # sol_tauff[:7] += tau_impedance
+        # print(F_ee, F_control, tau_impedance)
 
-            if self.Visualization:
-                self.vis.display(sol_q)  # for visualization
+        if self.Visualization:
+            self.vis.display(sol_q)  # for visualization
 
-            return sol_q, sol_tauff
+        return sol_q, sol_tauff, left_hand_pos, right_hand_pos
 
-        except Exception as e: 
-            print(f"ERROR in convergence, plotting debug info.{e}")
+        # except Exception as e:
+        #     print(f"ERROR in convergence, plotting debug info.{e}")
 
-            sol_q = self.opti.debug.value(self.var_q)
-            self.smooth_filter.add_data(sol_q)
-            sol_q = self.smooth_filter.filtered_data
+        #     sol_q = self.opti.debug.value(self.var_q)
+        #     self.smooth_filter.add_data(sol_q)
+        #     sol_q = self.smooth_filter.filtered_data
 
-            if current_lr_arm_motor_dq is not None:
-                v = current_lr_arm_motor_dq * 0.0
-            else:
-                v = (sol_q - self.init_data) * 0.0
+        #     if current_lr_arm_motor_dq is not None:
+        #         v = current_lr_arm_motor_dq * 0.0
+        #     else:
+        #         v = (sol_q - self.init_data) * 0.0
 
-            self.init_data = sol_q
+        #     self.init_data = sol_q
 
-            sol_tauff = pin.rnea(
-                self.reduced_robot.model,
-                self.reduced_robot.data,
-                sol_q,
-                v,
-                np.zeros(self.reduced_robot.model.nv),
-            )
+        #     sol_tauff = pin.rnea(
+        #         self.reduced_robot.model,
+        #         self.reduced_robot.data,
+        #         sol_q,
+        #         v,
+        #         np.zeros(self.reduced_robot.model.nv),
+        #     )
 
-            print(
-                f"sol_q:{sol_q} \nmotorstate: \n{current_lr_arm_motor_q} \nleft_pose: \n{left_wrist} \nright_pose: \n{right_wrist}"
-            )
-            if self.Visualization:
-                self.vis.display(sol_q)  # for visualization
+        #     print(
+        #         f"sol_q:{sol_q} \nmotorstate: \n{current_lr_arm_motor_q} \nleft_pose: \n{left_wrist} \nright_pose: \n{right_wrist}"
+        #     )
+        #     if self.Visualization:
+        #         self.vis.display(sol_q)  # for visualization
 
             # return sol_q, sol_tauff
-            return current_lr_arm_motor_q, np.zeros(self.reduced_robot.model.nv)
-
+            # return current_lr_arm_motor_q, np.zeros(self.reduced_robot.model.nv)
 
 if __name__ == "__main__":
     arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization=True)
-
-    oculus_reader = OculusReader()
+    # arm_ik = H1_2_ArmIK(Unit_Test = True, Visualization = True)
 
     # initial positon
     L_tf_target = pin.SE3(
@@ -393,52 +397,63 @@ if __name__ == "__main__":
     noise_amplitude_translation = 0.001
     noise_amplitude_rotation = 0.1
 
-    init_pos = None
-    init_rot = None
-    _delta_rot = None
-    _delta_pos = None
+    user_input = input(
+        "Please enter the start signal (enter 's' to start the subsequent program):\n"
+    )
+    if user_input.lower() == "s":
+        step = 0
+        while True:
+            # Apply rotation noise with bias towards y and z axes
+            rotation_noise_L = pin.Quaternion(
+                np.cos(np.random.normal(0, noise_amplitude_rotation) / 2),
+                0,
+                np.random.normal(0, noise_amplitude_rotation / 2),
+                0,
+            ).normalized()  # y bias
 
-    zero_pose = np.array([0.25, -0.25, 0.1])
+            rotation_noise_R = pin.Quaternion(
+                np.cos(np.random.normal(0, noise_amplitude_rotation) / 2),
+                0,
+                0,
+                np.random.normal(0, noise_amplitude_rotation / 2),
+            ).normalized()  # z bias
 
-    oculus_readings = oculus_reader.get_transformations_and_buttons()
-    time.sleep(1)
+            if step <= 120:
+                angle = rotation_speed * step
+                L_tf_target.rotation = (
+                    rotation_noise_L
+                    * pin.Quaternion(np.cos(angle / 2), 0, np.sin(angle / 2), 0)
+                ).toRotationMatrix()  # y axis
+                R_tf_target.rotation = (
+                    rotation_noise_R
+                    * pin.Quaternion(np.cos(angle / 2), 0, 0, np.sin(angle / 2))
+                ).toRotationMatrix()  # z axis
+                L_tf_target.translation += np.array(
+                    [0.001, 0.001, 0.001]
+                ) + np.random.normal(0, noise_amplitude_translation, 3)
+                R_tf_target.translation += np.array(
+                    [0.001, -0.001, 0.001]
+                ) + np.random.normal(0, noise_amplitude_translation, 3)
+            else:
+                angle = rotation_speed * (240 - step)
+                L_tf_target.rotation = (
+                    rotation_noise_L
+                    * pin.Quaternion(np.cos(angle / 2), 0, np.sin(angle / 2), 0)
+                ).toRotationMatrix()  # y axis
+                R_tf_target.rotation = (
+                    rotation_noise_R
+                    * pin.Quaternion(np.cos(angle / 2), 0, 0, np.sin(angle / 2))
+                ).toRotationMatrix()  # z axis
+                L_tf_target.translation -= np.array(
+                    [0.001, 0.001, 0.001]
+                ) + np.random.normal(0, noise_amplitude_translation, 3)
+                R_tf_target.translation -= np.array(
+                    [0.001, -0.001, 0.001]
+                ) + np.random.normal(0, noise_amplitude_translation, 3)
 
-    while True:
-        try:
-            oculus_readings = oculus_reader.get_transformations_and_buttons()
-            teleop_rot = oculus_readings[0]["r"][:3, :3]
-            trans = oculus_readings[0]["r"][:3, 3]
-            trans = np.array([-trans[2], -trans[0], trans[1]])
+            arm_ik.solve_ik(L_tf_target.homogeneous, R_tf_target.homogeneous)
 
-            index_finger = oculus_readings[1]["rightTrig"][0]
-            thumb_finger_1 = oculus_readings[1]["RThU"]
-            thumb_finger_2 = oculus_readings[1]["A"]
-            middle_finger = oculus_readings[1]["rightGrip"][0]
-
-            euler_rot = Rotation.from_matrix(teleop_rot).as_euler("XYZ")
-            euler_rot = np.array([-euler_rot[2], -euler_rot[0], euler_rot[1]])
-
-            if init_rot is None:
-                init_rot = euler_rot
-
-            _delta_rot = Rotation.from_euler("XYZ", (euler_rot - init_rot)).as_matrix()
-
-            if init_pos is None:
-                init_pos = trans
-
-            _delta_pos = trans - init_pos
-
-            print(f"Delta Pos: {_delta_pos}, Delta Rot: {_delta_rot}")
-
-        except Exception as e:
-            print(f"Error in reading: {e}")
-
-        _delta_pos = np.array([0, 0, 0])
-        _delta_rot = np.eye(3)
-
-        L_tf_target.translation = zero_pose + _delta_pos
-        L_tf_target.rotation = _delta_rot
-
-        arm_ik.solve_ik(L_tf_target.homogeneous, R_tf_target.homogeneous)
-
-        time.sleep(0.1)
+            step += 1
+            if step > 240:
+                step = 0
+            time.sleep(0.1)

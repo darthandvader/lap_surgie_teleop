@@ -1,15 +1,16 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 import os
+
 # os.environ['PYOPENGL_PLATFORM'] = 'egl'
 from OpenGL.GL import *
 from OpenGL.GLU import *
 from OpenGL.GLUT import *
+
 # from OpenGL.raw.GL.ARB.vertex_array_object import glGenVertexArrays, \
-                                      #   glBindVertexArray
+#   glBindVertexArray
 import sys
 import numpy as np
 from teleop.vive_tracker.fairmotion_vis import camera, utils
-
 
 
 class Viewer:
@@ -37,8 +38,13 @@ class Viewer:
     """
 
     def __init__(
-        self, title="glutgui_base", cam=None, size=(800, 600),
-        bgcolor=[1.0, 1.0, 1.0, 1.0], use_msaa=False, mouse_sensitivity=0.005,
+        self,
+        title="glutgui_base",
+        cam=None,
+        size=(800, 600),
+        bgcolor=[1.0, 1.0, 1.0, 1.0],
+        use_msaa=False,
+        mouse_sensitivity=0.005,
     ):
         self.title = title
         self.window = None
@@ -86,11 +92,7 @@ class Viewer:
         glDepthFunc(GL_LEQUAL)
         glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST)
 
-        glClearColor(
-            self.bgcolor[0], 
-            self.bgcolor[1], 
-            self.bgcolor[2], 
-            self.bgcolor[3])
+        glClearColor(self.bgcolor[0], self.bgcolor[1], self.bgcolor[2], self.bgcolor[3])
         glClear(GL_COLOR_BUFFER_BIT)
 
         ambient = [0.2, 0.2, 0.2, 1.0]
@@ -129,14 +131,13 @@ class Viewer:
 
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
         glEnable(GL_COLOR_MATERIAL)
-    
+
         if self.use_msaa:
             self._init_msaa()
-        
+
         glEnable(GL_LIGHTING)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
-
 
     def resize_GL(self, w, h):
         self.window_size = (w, h)
@@ -150,14 +151,16 @@ class Viewer:
 
         if self.use_msaa:
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self.msaa_fbo)
-        
+
         # Clear The Screen And The Depth Buffer
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         gluLookAt(
-            *self.cam_cur.pos, *self.cam_cur.origin, *self.cam_cur.vup,
+            *self.cam_cur.pos,
+            *self.cam_cur.origin,
+            *self.cam_cur.vup,
         )
 
         self.render_callback()
@@ -169,9 +172,7 @@ class Viewer:
             glMatrixMode(GL_PROJECTION)
             glPushMatrix()
             glLoadIdentity()
-            glOrtho(
-                0.0, self.window_size[0], self.window_size[1], 0.0, 0.0, 1.0
-            )
+            glOrtho(0.0, self.window_size[0], self.window_size[1], 0.0, 0.0, 1.0)
 
             glMatrixMode(GL_MODELVIEW)
             glPushMatrix()
@@ -192,32 +193,58 @@ class Viewer:
     def _init_msaa(self):
         num_samples = glGetIntegerv(GL_MAX_SAMPLES)
 
-        print('num_samples_for_msaa:', num_samples)
+        print("num_samples_for_msaa:", num_samples)
 
         self.msaa_tex = glGenTextures(1)
-        print('msaa_tex:', self.msaa_tex)
+        print("msaa_tex:", self.msaa_tex)
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, self.msaa_tex)
         glTexImage2DMultisample(
-            GL_TEXTURE_2D_MULTISAMPLE, num_samples, GL_RGBA8, self.window_size[0], self.window_size[1], False)
+            GL_TEXTURE_2D_MULTISAMPLE,
+            num_samples,
+            GL_RGBA8,
+            self.window_size[0],
+            self.window_size[1],
+            False,
+        )
 
         self.msaa_rbo_color = glGenRenderbuffers(1)
-        print('msaa_rbo_color:', self.msaa_rbo_color)
+        print("msaa_rbo_color:", self.msaa_rbo_color)
         glBindRenderbuffer(GL_RENDERBUFFER, self.msaa_rbo_color)
         glRenderbufferStorageMultisample(
-            GL_RENDERBUFFER, num_samples, GL_RGBA8, self.window_size[0], self.window_size[1])
+            GL_RENDERBUFFER,
+            num_samples,
+            GL_RGBA8,
+            self.window_size[0],
+            self.window_size[1],
+        )
 
         self.msaa_rbo_depth = glGenRenderbuffers(1)
-        print('msaa_rbo_depth:', self.msaa_rbo_depth)
+        print("msaa_rbo_depth:", self.msaa_rbo_depth)
         glBindRenderbuffer(GL_RENDERBUFFER, self.msaa_rbo_depth)
         glRenderbufferStorageMultisample(
-            GL_RENDERBUFFER, num_samples, GL_DEPTH_COMPONENT, self.window_size[0], self.window_size[1])
+            GL_RENDERBUFFER,
+            num_samples,
+            GL_DEPTH_COMPONENT,
+            self.window_size[0],
+            self.window_size[1],
+        )
 
         self.msaa_fbo = glGenFramebuffers(1)
         glBindFramebuffer(GL_FRAMEBUFFER, self.msaa_fbo)
 
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, self.msaa_fbo, 0)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, self.msaa_rbo_color)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self.msaa_rbo_depth)
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D_MULTISAMPLE,
+            self.msaa_fbo,
+            0,
+        )
+        glFramebufferRenderbuffer(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, self.msaa_rbo_color
+        )
+        glFramebufferRenderbuffer(
+            GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self.msaa_rbo_depth
+        )
 
         status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
         print("frame_buffer_status:", status)
@@ -226,7 +253,10 @@ class Viewer:
 
         iMultiSample = glGetIntegerv(GL_SAMPLE_BUFFERS)
         iNumSamples = glGetIntegerv(GL_SAMPLES)
-        print("MSAA on, GL_SAMPLE_BUFFERS = %d, GL_SAMPLES = %d\n"%(iMultiSample, iNumSamples))
+        print(
+            "MSAA on, GL_SAMPLE_BUFFERS = %d, GL_SAMPLES = %d\n"
+            % (iMultiSample, iNumSamples)
+        )
 
     def _post_process_msaa(self):
         x, y, w, h = glGetIntegerv(GL_VIEWPORT)
@@ -236,9 +266,17 @@ class Viewer:
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
         glDrawBuffer(GL_BACK)
         glBlitFramebuffer(
-            x, y, w, h, x, y, w, h, 
-            GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, 
-            GL_NEAREST)
+            x,
+            y,
+            w,
+            h,
+            x,
+            y,
+            w,
+            h,
+            GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT,
+            GL_NEAREST,
+        )
 
     # The function called whenever a key is pressed.
     # Note the use of Python tuples to pass in: (key, x, y)
@@ -310,14 +348,16 @@ class Viewer:
         # Run
         glutMainLoop()
 
-    def save_screen(self, dir, name, format="png", render=False, save_alpha_channel=False):
+    def save_screen(
+        self, dir, name, format="png", render=False, save_alpha_channel=False
+    ):
         image = self.get_screen(render, save_alpha_channel)
         image.save(os.path.join(dir, "%s.%s" % (name, format)), format=format)
 
     def get_screen(self, render=False, save_alpha_channel=False):
         if render:
             self.draw_GL()
-        
+
         x, y, width, height = glGetIntegerv(GL_VIEWPORT)
         glPixelStorei(GL_PACK_ALIGNMENT, 1)
         if save_alpha_channel:
@@ -327,5 +367,5 @@ class Viewer:
             data = glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE)
             image = Image.frombytes("RGB", (width, height), data)
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
-        
+
         return image

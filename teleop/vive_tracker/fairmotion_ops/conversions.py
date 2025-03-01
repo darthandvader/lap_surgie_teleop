@@ -76,7 +76,10 @@ def A2A(A):
             return a
 
     return batch_auto_reshape(
-        A, lambda x: utils._apply_fn_agnostic_to_vec_mat(x, a2a), (3,), (3,),
+        A,
+        lambda x: utils._apply_fn_agnostic_to_vec_mat(x, a2a),
+        (3,),
+        (3,),
     )
 
 
@@ -91,19 +94,28 @@ def A2E(A, order="xyz", degrees=False):
 
 def A2Q(A):
     return batch_auto_reshape(
-        A, lambda x: Rotation.from_rotvec(x).as_quat(), (3,), (4,),
+        A,
+        lambda x: Rotation.from_rotvec(x).as_quat(),
+        (3,),
+        (4,),
     )
 
 
 def A2R(A):
     return batch_auto_reshape(
-        A, lambda x: Rotation.from_rotvec(x).as_matrix(), (3,), (3, 3),
+        A,
+        lambda x: Rotation.from_rotvec(x).as_matrix(),
+        (3,),
+        (3, 3),
     )
 
 
 def A2T(A):
     return batch_auto_reshape(
-        A, lambda x: Rp2T(A2R(x), constants.zero_p()), (3,), (4, 4),
+        A,
+        lambda x: Rp2T(A2R(x), constants.zero_p()),
+        (3,),
+        (4, 4),
     )
 
 
@@ -162,7 +174,10 @@ From R to other representations
 
 def R2A(R):
     return batch_auto_reshape(
-        R, lambda x: Rotation.from_matrix(x).as_rotvec(), (3, 3), (3,),
+        R,
+        lambda x: Rotation.from_matrix(x).as_rotvec(),
+        (3, 3),
+        (3,),
     )
 
 
@@ -177,7 +192,10 @@ def R2E(R, order="XYZ", degrees=False):
 
 def R2Q(R):
     return batch_auto_reshape(
-        R, lambda x: Rotation.from_matrix(x).as_quat(), (3, 3), (4,),
+        R,
+        lambda x: Rotation.from_matrix(x).as_quat(),
+        (3, 3),
+        (4,),
     )
 
 
@@ -197,7 +215,10 @@ def R2R(R):
     rotations are invalid. Otherwise returns the same values.
     """
     return batch_auto_reshape(
-        R, lambda x: Rotation.from_matrix(x).as_matrix(), (3, 3), (3, 3),
+        R,
+        lambda x: Rotation.from_matrix(x).as_matrix(),
+        (3, 3),
+        (3, 3),
     )
 
 
@@ -212,7 +233,10 @@ From Q to other representations
 
 def Q2A(Q):
     return batch_auto_reshape(
-        Q, lambda x: Rotation.from_quat(x).as_rotvec(), (4,), (3,),
+        Q,
+        lambda x: Rotation.from_quat(x).as_rotvec(),
+        (4,),
+        (3,),
     )
 
 
@@ -231,19 +255,28 @@ def Q2Q(Q, op, xyzw_in=True):
     Otherwise returns the same values.
     """
     return batch_auto_reshape(
-        Q, lambda x: Rotation.from_quat(x).as_quat(), (4,), (4,),
+        Q,
+        lambda x: Rotation.from_quat(x).as_quat(),
+        (4,),
+        (4,),
     )
 
 
 def Q2R(Q):
     return batch_auto_reshape(
-        Q, lambda x: Rotation.from_quat(x).as_matrix(), (4,), (3, 3),
+        Q,
+        lambda x: Rotation.from_quat(x).as_matrix(),
+        (4,),
+        (3, 3),
     )
 
 
 def Q2T(Q):
     return batch_auto_reshape(
-        Q, lambda x: Rp2T(Q2R(x), constants.zero_p()), (4,), (4, 4),
+        Q,
+        lambda x: Rp2T(Q2R(x), constants.zero_p()),
+        (4,),
+        (4, 4),
     )
 
 
