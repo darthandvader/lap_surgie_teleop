@@ -67,7 +67,6 @@ class G1_29_ArmIK:
             "waist_yaw_joint",
             "waist_roll_joint",
             "waist_pitch_joint",
-            "left_wrist_pitch_joint",
             "left_thumb_1_joint",
             "left_thumb_2_joint",
             "left_thumb_3_joint",
@@ -199,7 +198,7 @@ class G1_29_ArmIK:
         self.opti.solver("ipopt", opts)
 
         self.init_data = np.zeros(self.reduced_robot.model.nq)
-        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 13)
+        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 14)
         self.vis = None
 
         if self.Visualization:
@@ -318,38 +317,38 @@ class G1_29_ArmIK:
                 np.zeros(self.reduced_robot.model.nv),
             )
 
-            # # right arm
-            # J = pin.computeFrameJacobian(
-            #     self.reduced_robot.model,
-            #     self.reduced_robot.data,
-            #     current_lr_arm_motor_q,
-            #     self.R_hand_id,
-            # )
-            # J_r = J[:, 6:]
-            # F_desired = np.array([150, 150, 150, 0, 0, 0])
-            # F_ee = np.linalg.pinv(J_r.T) @ current_lr_arm_motor_tau_est[6:]
-            # K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
-            # F_control = K_p @ (F_desired - F_ee)
-            # # Compute the torque using the Jacobian transpose
-            # tau_impedance = J_r.T @ F_control
-            # sol_tauff[6:] += tau_impedance
+            # right arm
+            J = pin.computeFrameJacobian(
+                self.reduced_robot.model,
+                self.reduced_robot.data,
+                current_lr_arm_motor_q,
+                self.R_hand_id,
+            )
+            J_r = J[:, 7:]
+            F_desired = np.array([150, 150, 150, 0, 0, 0])
+            F_ee = np.linalg.pinv(J_r.T) @ current_lr_arm_motor_tau_est[7:]
+            K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
+            F_control = K_p @ (F_desired - F_ee)
+            # Compute the torque using the Jacobian transpose
+            tau_impedance = J_r.T @ F_control
+            # sol_tauff[7:] += tau_impedance
 
-            # # left arm
-            # J = pin.computeFrameJacobian(
-            #     self.reduced_robot.model,
-            #     self.reduced_robot.data,
-            #     current_lr_arm_motor_q,
-            #     self.L_hand_id,
-            # )
-            # J_l = J[:, :6]
-            # F_desired = np.array([150, 150, 150, 0, 0, 0])
-            # F_ee = np.linalg.pinv(J_l.T) @ current_lr_arm_motor_tau_est[:6]
-            # K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
-            # # Compute impedance force
-            # F_control = K_p @ (F_desired - F_ee)
-            # # Compute the torque using the Jacobian transpose
-            # tau_impedance = J_l.T @ F_control
-            # sol_tauff[:6] += tau_impedance
+            # left arm
+            J = pin.computeFrameJacobian(
+                self.reduced_robot.model,
+                self.reduced_robot.data,
+                current_lr_arm_motor_q,
+                self.L_hand_id,
+            )
+            J_l = J[:, :7]
+            F_desired = np.array([150, 150, 150, 0, 0, 0])
+            F_ee = np.linalg.pinv(J_l.T) @ current_lr_arm_motor_tau_est[:7]
+            K_p = np.diag([0, 0, 0.0001, 0, 0, 0])
+            # Compute impedance force
+            F_control = K_p @ (F_desired - F_ee)
+            # Compute the torque using the Jacobian transpose
+            tau_impedance = J_l.T @ F_control
+            # sol_tauff[:7] += tau_impedance
 
             if self.Visualization:
                 self.vis.display(sol_q)  # for visualization
@@ -416,6 +415,10 @@ if __name__ == "__main__":
     _delta_rot_l = np.zeros(3)
     _delta_pos_r = np.zeros(3)
     _delta_rot_r = np.zeros(3)
+    curr_delta_pos_l = np.zeros(3)
+    curr_delta_rot_l = np.zeros(3)
+    curr_delta_pos_r = np.zeros(3)
+    curr_delta_rot_r = np.zeros(3)
     prev_delta_pos_l = None
     prev_delta_rot_l = None
     prev_delta_pos_r = None
@@ -451,6 +454,7 @@ if __name__ == "__main__":
             # Get pose data for the tracker device and format as a string
             tracker_1_pose = np.array([val for val in tracker_1.get_pose_euler()])
             tracker_2_pose = np.array([val for val in tracker_2.get_pose_euler()])
+            print(tracker_1_pose, tracker_2_pose)
 
             if init_pose_tracker_1 is None:
                 init_pose_tracker_1 = tracker_1_pose
@@ -577,7 +581,7 @@ if __name__ == "__main__":
             _delta_pos_r += curr_delta_pos_r - prev_delta_pos_r
             _delta_rot_r += curr_delta_rot_r - prev_delta_rot_r
 
-            _delta_rot_r = np.array([60.0, -15.0, 0.0])
+            # _delta_rot_r = np.array([60.0, -15.0, 0.0])
 
             prev_delta_pos_l, prev_delta_rot_l = (
                 curr_delta_pos_l.copy(),

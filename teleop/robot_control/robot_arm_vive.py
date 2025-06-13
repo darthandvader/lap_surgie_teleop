@@ -377,12 +377,15 @@ if __name__ == "__main__":
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, +0.13, 0.2]),
+        # np.array([0.0, +0.2, 0.0]),
+        # np.array([0.25, +0.2, 0.2]),
+        np.array([0.25, +0.2, 0.1]),
+
     )
 
     R_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, -0.2, 0.2]),
+        np.array([0.25, -0.2, 0.1]),
     )
 
     init_pose_tracker_1 = None
@@ -399,8 +402,8 @@ if __name__ == "__main__":
     track_clutch_button = False
     track_camera_button = False
 
-    zero_pose_l = np.array([0.25, 0.2, 0.2])
-    zero_pose_r = np.array([0.25, -0.2, 0.2])
+    zero_pose_l = np.array([0.25, 0.2, 0.1])
+    zero_pose_r = np.array([0.25, -0.2, 0.1])
 
     rotation_speed = 0.005  # Rotation speed in radians per iteration
     q_target = np.zeros(35)
@@ -594,10 +597,6 @@ if __name__ == "__main__":
         current_lr_arm_dq = arm.get_current_dual_arm_dq()
         current_lr_arm_tau_est = arm.get_current_dual_arm_tau_est()
 
-        current_lr_arm_q = np.delete(current_lr_arm_q, 5)
-        current_lr_arm_dq = np.delete(current_lr_arm_dq, 5)
-        current_lr_arm_tau_est = np.delete(current_lr_arm_tau_est, 5)
-
         sol_q, sol_tauff = arm_ik.solve_ik(
             L_tf_target.homogeneous,
             R_tf_target.homogeneous,
@@ -606,7 +605,5 @@ if __name__ == "__main__":
             current_lr_arm_tau_est,
         )
 
-        sol_q = np.insert(sol_q, 5, 0)
-        sol_tauff = np.insert(sol_tauff, 5, 0)
         arm.ctrl_dual_arm(sol_q, sol_tauff)
         time.sleep(0.01)

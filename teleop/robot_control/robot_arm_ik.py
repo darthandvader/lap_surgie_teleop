@@ -51,6 +51,7 @@ class G1_29_ArmIK:
             "waist_yaw_joint",
             "waist_roll_joint",
             "waist_pitch_joint",
+            "left_wrist_pitch_joint",
             "left_thumb_1_joint",
             "left_thumb_2_joint",
             "left_thumb_3_joint",
