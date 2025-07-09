@@ -1,0 +1,25 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/arclab/dvrk_ws/install/cisst_ros_crtk/include/**",
+        "/home/arclab/dvrk_ws/install/crtk_msgs/include/**",
+        "/home/arclab/dvrk_ws/install/cisst_ros_bridge/include/**",
+        "/home/arclab/dvrk_ws/install/cisst_msgs/include/**",
+        "/home/arclab/dvrk_ws/install/arclab_dvrk/include/**",
+        "/opt/ros/humble/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}

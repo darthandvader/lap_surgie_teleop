@@ -20,3 +20,5 @@ __MACOSX/
 !wrist_and_ring_mount.png
 teleop/data/
 episode_0*
+*install*
+*log*
