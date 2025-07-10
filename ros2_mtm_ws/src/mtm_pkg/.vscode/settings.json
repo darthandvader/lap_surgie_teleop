@@ -1,0 +1,30 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/arclab/workspaces/soofiyan_ws/install/unitree_sdk2py/lib/python3.10/site-packages",
+        "/home/arclab/workspaces/soofiyan_ws/install/mtm_pkg/lib/python3.10/site-packages",
+        "/home/arclab/dvrk_ws/install/cisst/lib",
+        "/home/arclab/dvrk_ws/install/dvrk_python/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/dvrk_camera_registration/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/crtk_python_client/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/crtk_msgs/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/cisst_msgs/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/cisst/lib",
+        "/home/arclab/dvrk_ws/install/arclab_dvrk/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/arclab/workspaces/soofiyan_ws/install/unitree_sdk2py/lib/python3.10/site-packages",
+        "/home/arclab/workspaces/soofiyan_ws/install/mtm_pkg/lib/python3.10/site-packages",
+        "/home/arclab/dvrk_ws/install/cisst/lib",
+        "/home/arclab/dvrk_ws/install/dvrk_python/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/dvrk_camera_registration/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/crtk_python_client/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/crtk_msgs/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/cisst_msgs/local/lib/python3.10/dist-packages",
+        "/home/arclab/dvrk_ws/install/cisst/lib",
+        "/home/arclab/dvrk_ws/install/arclab_dvrk/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}
