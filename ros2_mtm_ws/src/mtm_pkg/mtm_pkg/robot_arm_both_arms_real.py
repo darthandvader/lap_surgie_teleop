@@ -16,6 +16,8 @@ import os
 import sys
 import math
 from math import sin, cos, radians, degrees, atan2, asin
+from enum import IntEnum
+from pynput import keyboard  # pip install pynput
 
 import rclpy
 from rclpy.node import Node
@@ -54,6 +56,122 @@ from scipy.spatial.transform import Rotation as R
 
 from rcm_control import *
 
+def get_robot_transforms(g1arm):
+    urdf_path = "../../../../assets/g1/g1_body29_hand14.urdf"
+    model = pin.buildModelFromUrdf(urdf_path)
+    data = model.createData()
+    name_to_idx = {name: i-1 for i, name in enumerate(model.names) if i > 0}
+
+    # URDF names for your 29 real joints in EXACT order of your indices 0..28
+    urdf_order_29 = [
+        # Left leg (0..5)
+        "left_hip_pitch_joint","left_hip_roll_joint","left_hip_yaw_joint",
+        "left_knee_joint","left_ankle_pitch_joint","left_ankle_roll_joint",
+        # Right leg (6..11)
+        "right_hip_pitch_joint","right_hip_roll_joint","right_hip_yaw_joint",
+        "right_knee_joint","right_ankle_pitch_joint","right_ankle_roll_joint",                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     "waist_yaw_joint","waist_roll_joint","waist_pitch_joint",
+        # Left arm (15..21)
+        "left_shoulder_pitch_joint","left_shoulder_roll_joint","left_shoulder_yaw_joint",
+        "left_elbow_joint","left_wrist_roll_joint","left_wrist_pitch_joint","left_wrist_yaw_joint",
+        # Right arm (22..28)
+        "right_shoulder_pitch_joint","right_shoulder_roll_joint","right_shoulder_yaw_joint",
+        "right_elbow_joint","right_wrist_roll_joint","right_wrist_pitch_joint","right_wrist_yaw_joint",
+    ]
+
+    # in the loop
+    q35 = g1arm.get_current_motor_q()
+    q29 = q35[:29]
+
+    q_full = pin.neutral(model)  # all others (hands) are 0
+    for i, jname in enumerate(urdf_order_29):
+        if jname in name_to_idx:
+            q_full[name_to_idx[jname]] = float(q29[i])      
+
+    pin.forwardKinematics(model, data, q_full)
+    pin.updateFramePlacements(model, data)
+
+    fid = model.getFrameId("d435_joint")   # or body id fallback
+    T_base_camera = data.oMf[fid]
+    R = T_base_camera.rotation   # TODO: maybe we need another rotation to align with camera optical axis.
+    p = T_base_camera.translation
+    # print("Base->camera p:", p)
+    # print("Base->camera R (rpy):", matrix_to_euler(R))
+    H_camera = np.eye(4)
+    H_camera[:3, :3] = R
+    H_camera[:3, 3]  = p
+
+    # adjust to camera orientation (optical axis Z forward, Y down)
+    R_adjust = Rotation.from_euler('y', 90, degrees=True).as_matrix() @ Rotation.from_euler('z', -90, degrees=True).as_matrix()
+    H_camera[:3, :3] = R @ R_adjust
+    H_adjust_offset = np.eye(4)
+    H_adjust_offset[:3, 3] = np.array([-0.015, 0.0, 0.0])  # camera offset along optical axis
+    H_camera = H_camera @ H_adjust_offset
+    # print("Base->camera T:", H_camera)
+
+    # get a head link
+    hid = model.getFrameId("head_link")   
+    T_base_head = data.oMf[hid]
+    R_head = T_base_head.rotation
+    # p_head = T_base_head.translation
+    p_head = np.array([0.005267, 0.000299, 0.449869]) + np.array([0.0, 0.0, 0.08])
+    H_head = np.eye(4)
+    H_head[:3, :3] = R_head
+    H_head[:3, 3]  = p_head
+
+    H_head_adjust = np.eye(4)
+    H_head_adjust[:3, :3] = Rotation.from_euler('z', -90, degrees=True).as_matrix() @ Rotation.from_euler('y', 180, degrees=True).as_matrix()
+    H_head = H_head @ H_head_adjust
+    # print("Base->head T:", H_head)
+
+
+    # get both end-effector links
+    rfid = model.getFrameId("right_wrist_yaw_joint")
+    T_base_rendeff = data.oMf[rfid]
+    H_right_wrist = np.eye(4)
+    H_right_wrist[:3, :3] = T_base_rendeff.rotation
+    H_right_wrist[:3, 3]  = T_base_rendeff.translation
+
+    lfid = model.getFrameId("left_wrist_yaw_joint")
+    T_base_lendeff = data.oMf[lfid]
+    H_left_wrist = np.eye(4)
+    H_left_wrist[:3, :3] = T_base_lendeff.rotation
+    H_left_wrist[:3, 3]  = T_base_lendeff.translation 
+
+    return H_camera, H_head, H_right_wrist, H_left_wrist
+
+class ControlMode(IntEnum):
+    RCM = 0
+    DIRECT = 1
+
+control_mode = ControlMode.RCM
+_mode_lock = threading.Lock()
+
+# def _on_key_press(key):
+#     global control_mode
+#     try:
+#         if getattr(key, "char", None) == "s":
+#             with _mode_lock:
+#                 control_mode = (ControlMode.DIRECT
+#                                 if control_mode == ControlMode.RCM
+#                                 else ControlMode.RCM)
+#                 print(f"[MODE] Switched to: {control_mode.name}")
+#     except Exception:
+#         pass  # ignore non-character keys
+
+
+def _on_key_press(key):
+    global control_mode
+    if hasattr(key, "char") and key.char == "m":
+        with _mode_lock:
+            control_mode = (ControlMode.DIRECT
+                            if control_mode == ControlMode.RCM
+                            else ControlMode.RCM)
+            print(f"[MODE] Switched to: {control_mode.name}")
+
+# start the keyboard listener once
+_key_listener = keyboard.Listener(on_press=_on_key_press)
+_key_listener.daemon = True
+_key_listener.start()
 
 
 
@@ -131,18 +249,6 @@ class FootpedalSubscriber(Node):
             self.listener_callback_footpedal,
             10,
         )
-        # self.subscription_footpedal_plus = self.create_subscription(
-        #     Joy,  # Replace with the actual message type
-        #     "/footpedals/cam_plus",
-        #     self.listener_callback_footpedal_plus,
-        #     10,
-        # )
-        # self.subscription_footpedal_minus = self.create_subscription(
-        #     Joy,  # Replace with the actual message type
-        #     "/footpedals/cam_minus",
-        #     self.listener_callback_footpedal_minus,
-        #     10,
-        # )
         self.subscription_controller = self.create_subscription(
             PoseStamped,  # Correct message type
             "/MTMR/measured_cp",
@@ -164,11 +270,7 @@ class FootpedalSubscriber(Node):
         if len(msg.buttons) > 0:
             self.clutch_state = msg.buttons[
                 0
-            ]  # Assuming the clutch is the first button
-            # if self.clutch_state == 1:
-            #     self.get_logger().info("Clutch is engaged.")
-            # else:
-            #     self.get_logger().info("Clutch is disengaged.")
+            ]
         else:
             self.get_logger().warn("No buttons data available.")
 
@@ -184,15 +286,7 @@ class FootpedalSubscriber(Node):
                 msg.pose.orientation.z,
             ]
         )
-        # print(self.x, self.y, self.z, self.quat)
-
-    # def listener_callback_footpedal_plus(self, msg):
-    #     self.plus = msg.buttons[0]
-
-    # def listener_callback_footpedal_minus(self, msg):
-    #     self.minus = msg.buttons[0]
-
-
+        
 class FootpedalSubscriber_(Node):
     def __init__(self):
         super().__init__("footpedal_subscriber_")
@@ -256,7 +350,7 @@ class G1_29_ArmController:
 
         self.kp_high = 300.0
         self.kd_high = 5.0
-        self.kp_low = 60.0
+        self.kp_low = 50.0
         self.kd_low = 3.0
         self.kp_wrist = 55.0
         self.kd_wrist = 3.0
@@ -707,11 +801,62 @@ def point_to_rcm(v, up_hint=np.array([0,1,0])):
     y = np.cross(z, x)
     return np.column_stack((x, y, z))   # columns are body axes in WORLD
 
-def _min_jerk_s_and_ds(tau):
-    # tau in [0,1]
-    s  = 10*tau**3 - 15*tau**4 + 6*tau**5
-    ds = 30*tau**2 - 60*tau**3 + 30*tau**4
-    return s, ds
+
+def se3_or_H_to_posestamped(T, frame_id="g1_base", stamp=None):
+    """
+    Convert either a pin.SE3 or a 4x4 homogeneous matrix into PoseStamped.
+    """
+    msg = PoseStamped()
+    if stamp is not None:
+        msg.header.stamp = stamp
+    msg.header.frame_id = frame_id
+
+    # Accept both pin.SE3 and 4x4 numpy
+    if isinstance(T, pin.SE3):
+        R_mat = T.rotation
+        p = T.translation
+    else:
+        R_mat = T[:3, :3]
+        p = T[:3, 3]
+
+    quat = Rotation.from_matrix(R_mat).as_quat()  # [x, y, z, w]
+
+    msg.pose.position.x = float(p[0])
+    msg.pose.position.y = float(p[1])
+    msg.pose.position.z = float(p[2])
+    msg.pose.orientation.x = float(quat[0])
+    msg.pose.orientation.y = float(quat[1])
+    msg.pose.orientation.z = float(quat[2])
+    msg.pose.orientation.w = float(quat[3])
+
+    return msg
+
+
+
+class PosePublisher(Node):
+    def __init__(self):
+        super().__init__("g1_pose_publisher")
+
+        self.pub_head = self.create_publisher(
+            PoseStamped, "/g1/head_pose", 10
+        )
+        self.pub_left_ee = self.create_publisher(
+            PoseStamped, "/g1/left_ee_pose", 10
+        )
+        self.pub_right_ee = self.create_publisher(
+            PoseStamped, "/g1/right_ee_pose", 10
+        )
+
+    def publish_all(self, H_head, T_L_curr, T_R_curr):
+        now = self.get_clock().now().to_msg()
+
+        head_msg = se3_or_H_to_posestamped(H_head, frame_id="g1_base", stamp=now)
+        left_msg = se3_or_H_to_posestamped(T_L_curr, frame_id="g1_base", stamp=now)
+        right_msg = se3_or_H_to_posestamped(T_R_curr, frame_id="g1_base", stamp=now)
+
+        self.pub_head.publish(head_msg)
+        self.pub_left_ee.publish(left_msg)
+        self.pub_right_ee.publish(right_msg)
 
 
 if __name__ == "__main__":
@@ -725,19 +870,29 @@ if __name__ == "__main__":
     footpedal_subscriber_ = FootpedalSubscriber_()
     rcm_subscriber = RCMsuscriber()
 
-    arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization=False)
+    arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization = False)
     g1arm = G1_29_ArmController()
 
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, +0.2, 0.1]),
+        np.array([0.15, +0.2, 0.05]),
     )
 
     R_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, -0.2, 0.1]),
+        np.array([0.15, -0.2, 0.05]),
     )
+
+
+    last_cmd_T_r = np.eye(4)  # last feasible RIGHT SE3 we commanded
+    last_cmd_T_r[:3,:3] = R_tf_target.rotation
+    last_cmd_T_r[:3, 3] = R_tf_target.translation
+
+    last_cmd_T_l = np.eye(4)  # last feasible LEFT SE3 we commanded
+    last_cmd_T_l[:3,:3] = L_tf_target.rotation
+    last_cmd_T_l[:3, 3] = L_tf_target.translation
+
 
     rotation_speed = 0.005
     noise_amplitude_translation = 0.001
@@ -760,6 +915,11 @@ if __name__ == "__main__":
     init_delta_flag = True
     track_clutch_button = True
     track_camera_button = False
+
+    clip_r = False # for clipping poses outside of motion range.
+    clip_l = False
+    val_delta_pos_r = None
+    val_delta_pos_l = None
 
     zero_pose_l = np.array([0.35, 0.2, 0.1])
     zero_pose_r = np.array([0.35, -0.2, 0.1])
@@ -786,14 +946,14 @@ if __name__ == "__main__":
     pos_err_l = None
     rot_err_l = None
 
+    pose_pub_node = PosePublisher()   # <-- NEW
+
     executor = SingleThreadedExecutor()
     executor.add_node(footpedal_subscriber)
     executor.add_node(footpedal_subscriber_)
     executor.add_node(rcm_subscriber)
-    # executor = MultiThreadedExecutor(num_threads=2)
-    # executor.add_node(footpedal_subscriber)
-    # executor.add_node(footpedal_subscriber_)
-    # executor.add_node(rcm_subscriber)
+    executor.add_node(pose_pub_node)  # <-- NEW
+    
     # TODO: if rcm is none, use the last valid rcm
 
     # Spin ROS in a background thread (no blocking in your control loop)
@@ -814,11 +974,17 @@ if __name__ == "__main__":
     rcm_l = None
     rcm_r = None
 
-    smoother_R = SE3Smoother(tau_pos=0.02, tau_rot=0.02)   # tune as needed
-    smoother_L = SE3Smoother(tau_pos=0.02, tau_rot=0.02)
     prev_time = time.perf_counter()
+    last_mode = control_mode
+
+    H_camera, H_head, _, _ = get_robot_transforms(g1arm)  # get the current transforms
 
     while True:
+        # print("----- New control loop iteration -----")
+        # _mode == ControlMode.RCM
+
+        with _mode_lock:
+            _mode = control_mode
 
         start = time.time()
         clutch_pressed = False
@@ -832,8 +998,6 @@ if __name__ == "__main__":
 
         # print("Clutch state:", clutch_pressed)
 
-
-        #MTM shown as tracker here
         tracker_1_pose = np.array(
             [
                 footpedal_subscriber_.x_,
@@ -856,7 +1020,8 @@ if __name__ == "__main__":
                 footpedal_subscriber.quat[3],
             ]
         )
-
+        # print("Tracker 1 raw pose:", tracker_1_pose)
+        # print("Tracker 2 raw pose:", tracker_2_pose)
         if init_pose_tracker_1 is None:
             init_pose_tracker_1 = tracker_1_pose
         if init_pose_tracker_2 is None:
@@ -871,18 +1036,20 @@ if __name__ == "__main__":
             -tracker_1_pose[0],
             tracker_1_pose[2],
         ]
+
         tracker_2_pose[:3] = [
             tracker_2_pose[1],
             -tracker_2_pose[0],
             tracker_2_pose[2],
         ]
+
         if np.allclose(tracker_1_pose[:3], 0.0, atol=1e-8) and np.allclose(tracker_1_pose[3:], [1,0,0,0], atol=1e-8):
                 # skip this loop; wait for a real sample
                 continue
         
         if np.allclose(tracker_2_pose[:3], 0.0, atol=1e-8) and np.allclose(tracker_2_pose[3:], [1,0,0,0], atol=1e-8):
             continue
-
+        
         # print("Tracker 1 pose:", tracker_1_pose)
         # print("Tracker 2 pose:", tracker_2_pose)
 
@@ -922,6 +1089,7 @@ if __name__ == "__main__":
         #     init_delta_flag = False
 
         # for clutch pressed
+
         if clutch_pressed:
             curr_delta_pos_r, curr_delta_rot_r = (
                 prev_delta_pos_r.copy(),
@@ -933,33 +1101,52 @@ if __name__ == "__main__":
             )
             track_clutch_button = True
 
-        # print("Current delta pos r:", curr_delta_pos_r, "Current delta rot r:", curr_delta_rot_r)
-        # print("Previous delta pos r:", prev_delta_pos_r, "Previous delta rot r:", prev_delta_rot_r)
 
-        # print("Current delta pos l:", curr_delta_pos_l, "Current delta rot l:", curr_delta_rot_l)
-        # print("Previous delta pos l:", prev_delta_pos_l, "Previous delta rot l:", prev_delta_rot_l)
+        ##########################initial poses############################################
+        if _mode != last_mode:
+            T_L_curr, T_R_curr = arm_ik.get_current_ee_poses() 
+            base_pos_l =  T_L_curr.copy()
+            base_pos_r =  T_R_curr.copy()
+            last_mode = _mode
+            # print(f"[MODE] Switched to: {_mode.name}")
+            # clear deltas
+            _delta_pos_l = np.zeros(3)
+            _delta_rot_l = np.array([0, 0, 0, 1], dtype=np.float64)
+            _delta_pos_r = np.zeros(3)
+            _delta_rot_r = np.array([0, 0, 0, 1], dtype=np.float64)
+            prev_delta_pos_l, prev_delta_rot_l = (
+                curr_delta_pos_l.copy(),
+                curr_delta_rot_l.copy(),
+            )   
+            prev_delta_pos_r, prev_delta_rot_r = (
+                curr_delta_pos_r.copy(),    
+                curr_delta_rot_r.copy(),
+            )
 
-        _delta_pos_r += (curr_delta_pos_r - prev_delta_pos_r)*0.4
-        # _delta_rot_r += curr_delta_rot_r - prev_delta_rot_r
+        if clip_r and val_delta_pos_r is not None:
+            _delta_pos_r = val_delta_pos_r
+            clip_r = False
+        else:
+            _delta_pos_r += (curr_delta_pos_r - prev_delta_pos_r)*0.4
         _delta_rot_r = quat_multiply(
             _delta_rot_r,
             quat_conjugate(
                 quat_multiply(curr_delta_rot_r, quat_conjugate(prev_delta_rot_r))
             ),
         )
-
-        # left arm
+      
         curr_tracker_pose_1 = tracker_1_pose[3:]
         delta_tracker_pose_1 = quat_multiply(curr_tracker_pose_1, quat_conjugate(init_pose_tracker_1[3:]))
 
-
-        # right arm
         curr_tracker_pose_2 = tracker_2_pose[3:]
         delta_tracker_pose_2 = quat_multiply(curr_tracker_pose_2, quat_conjugate(init_pose_tracker_2[3:]))
 
+        if clip_l and val_delta_pos_l is not None:   
+            _delta_pos_l = val_delta_pos_l
+            clip_l = False
+        else:
+            _delta_pos_l += (curr_delta_pos_l - prev_delta_pos_l)*0.4
 
-        _delta_pos_l += (curr_delta_pos_l - prev_delta_pos_l)*0.4
-        # _delta_rot_l += curr_delta_rot_l - prev_delta_rot_l
         _delta_rot_l = quat_multiply(
             _delta_rot_l,
             quat_conjugate(
@@ -971,92 +1158,103 @@ if __name__ == "__main__":
             curr_delta_pos_l.copy(),
             curr_delta_rot_l.copy(),
         )
+        
         prev_delta_pos_r, prev_delta_rot_r = (
             curr_delta_pos_r.copy(),
             curr_delta_rot_r.copy(),
         )
 
-        # rcm = np.array([0.60, -0.01, -0.035])
-        # rcm_ = np.array([0.60, 0.19, -0.035])
         # if rcm_l is None and rcm_r is None:
-            # rcm_r = np.array([rcm_subscriber.x, rcm_subscriber.y, rcm_subscriber.z]) + np.array([-0.1, 0.0, 0.0])
-            # rcm_l = np.array([rcm_subscriber.x_, rcm_subscriber.y_, rcm_subscriber.z_]) + np.array([-0.1, 0.0, 0.0])
-        
-        # print("RCM right arm:", rcm_r)
-        # print("RCM left arm:", rcm_l)
-        # RCM right arm: [ 0.7433  -0.08741  0.15026]
-        # RCM left arm: [ 0.62328 -0.27447  0.18851]
-        rcm_r = np.array([0.71, -0.2, 0.13])
-        rcm_l = np.array([0.71, 0.1, 0.13])
+        rcm_r_cam = np.array([rcm_subscriber.x, rcm_subscriber.y, rcm_subscriber.z, 1]) 
+        rcm_l_cam = np.array([rcm_subscriber.x_, rcm_subscriber.y_, rcm_subscriber.z_, 1]) 
+        rcm_r = (H_camera @ rcm_r_cam)[:3]
+        rcm_l = (H_camera @ rcm_l_cam)[:3]
+
+        # rcm_r = np.array([0.71, -0.2, 0.13])
+        # rcm_l = np.array([0.71, 0.1, 0.13])
         t0 = time.time()
-        print(f"before IK timer: {t0-start:.4f}s")
-        ##########################Right arm############################################
-        if H1_init_r is None:
-            H1_init_r = np.eye(4)
-            H1_init_r[:3, 3] = zero_pose_r
-            rot_rcm_r = point_to_rcm(rcm_r - zero_pose_r)
-            # H1_init[:3, :3] = Rotation.from_quat( rot_rcm ).as_matrix()  # initially it's identity (mtm reset)
-            H1_init_r[:3, :3] = rot_rcm_r # point to rcm
-            Ps2_init_r, _, _, _ = compute_shaft2_pose(H1_init_r, rcm_r, return_intermediate=False)
-            zero_pos_ps2_r = Ps2_init_r[:3, 3]
+        # print(f"before IK timer: {t0-start:.4f}s")
+        # _mode == ControlMode.RCM
+        if _mode == ControlMode.RCM:
+            ##########################Right arm############################################
+            if H1_init_r is None:
+                H1_init_r = np.eye(4)
+                H1_init_r[:3, 3] = zero_pose_r
+                rot_rcm_r = point_to_rcm(rcm_r - zero_pose_r)
+                # H1_init[:3, :3] = Rotation.from_quat( rot_rcm ).as_matrix()  # initially it's identity (mtm reset)
+                H1_init_r[:3, :3] = rot_rcm_r # point to rcm
+                Ps2_init_r, _, _, _ = compute_shaft2_pose(H1_init_r, rcm_r, return_intermediate=False)
+                zero_pos_ps2_r = Ps2_init_r[:3, 3]
 
-        Ps2_gt_r = np.eye(4)
-        zero_rot_ps2_r = Ps2_init_r[:3, :3]
-        # Ps2_gt_r[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) @ zero_rot_ps2_r  # use global rotation
-        Ps2_gt_r[:3, :3] =   zero_rot_ps2_r @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) # use global rotation
+            Ps2_gt_r = np.eye(4)
+            zero_rot_ps2_r = Ps2_init_r[:3, :3]
+            # Ps2_gt_r[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) @ zero_rot_ps2_r  # use global rotation
+            Ps2_gt_r[:3, :3] =   zero_rot_ps2_r @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) # use global rotation
 
-        Ps2_gt_r[:3, 3] = zero_pos_ps2_r + _delta_pos_r
+            Ps2_gt_r[:3, 3] = zero_pos_ps2_r + _delta_pos_r
 
-        H1_est_r = invert_shaft2_pose_angle_limits(Ps2_gt_r, rcm_r, H1_prev=H1_prev_r)
+            H1_est_r = invert_shaft2_pose_angle_limits(Ps2_gt_r, rcm_r, H1_prev=H1_prev_r)
 
-        if H1_est_r[:3, 3][0] >= rcm_r[0]:
-            print("Estimated H1 pose is beyond RCM.", H1_est_r[:3, 3][0], rcm_r[0])
-            continue
+            if H1_est_r[:3, 3][0] >= rcm_r[0]:
+                print("Estimated H1 pose is beyond RCM.", H1_est_r[:3, 3][0], rcm_r[0])
+                continue
 
-        H1_prev_r = H1_est_r.copy()
-        H1_est_r[:3, 3] += np.array([-0.1, 0.0, 0.0])  # TODO: use the new offset
+            H1_prev_r = H1_est_r.copy()
+            H1_est_r[:3, 3] += np.array([-0.1, 0.0, 0.0])  
 
-        R_tf_target.translation = H1_est_r[
-            :3, 3
-        ] 
+            R_tf_target.translation = H1_est_r[
+                :3, 3
+            ] 
 
-        R_tf_target.rotation = H1_est_r[:3, :3]
-        # R_tf_target.translation = zero_pose_r + _delta_pos_r
-        # R_tf_target.rotation = Rotation.from_quat(_delta_rot_r).as_matrix()
+            R_tf_target.rotation = H1_est_r[:3, :3]
+            # R_tf_target.translation = zero_pose_r + _delta_pos_r
+            # R_tf_target.rotation = Rotation.from_quat(_delta_rot_r).as_matrix()
 
 
+            ##########################Left arm############################################
 
-        ##########################Left arm############################################
+            if H1_init_l is None:
+                H1_init_l = np.eye(4)
+                H1_init_l[:3, 3] = zero_pose_l
+                rot_rcm_l = point_to_rcm(rcm_l - zero_pose_l)
+                H1_init_l[:3, :3] = rot_rcm_l # point to rcm
+                Ps2_init_l, _, _, _ = compute_shaft2_pose(H1_init_l, rcm_l, return_intermediate=False)
+                zero_pos_ps2_l = Ps2_init_l[:3, 3]
 
-        if H1_init_l is None:
-            H1_init_l = np.eye(4)
-            H1_init_l[:3, 3] = zero_pose_l
-            rot_rcm_l = point_to_rcm(rcm_l - zero_pose_l)
-            H1_init_l[:3, :3] = rot_rcm_l # point to rcm
-            Ps2_init_l, _, _, _ = compute_shaft2_pose(H1_init_l, rcm_l, return_intermediate=False)
-            zero_pos_ps2_l = Ps2_init_l[:3, 3]
+            Ps2_gt_l = np.eye(4)
+            zero_rot_ps2_l = Ps2_init_l[:3, :3]
+            # Ps2_gt_l[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) @ zero_rot_ps2_l  # use global rotation
+            Ps2_gt_l[:3, :3] =   zero_rot_ps2_l @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) # use global rotation
 
-        Ps2_gt_l = np.eye(4)
-        zero_rot_ps2_l = Ps2_init_l[:3, :3]
-        # Ps2_gt_l[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) @ zero_rot_ps2_l  # use global rotation
-        Ps2_gt_l[:3, :3] =   zero_rot_ps2_l @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) # use global rotation
+            Ps2_gt_l[:3, 3] = zero_pos_ps2_l + _delta_pos_l
 
-        Ps2_gt_l[:3, 3] = zero_pos_ps2_l + _delta_pos_l
+            H1_est_l = invert_shaft2_pose_angle_limits(Ps2_gt_l, rcm_l, H1_prev=H1_prev_l)
 
-        H1_est_l = invert_shaft2_pose_angle_limits(Ps2_gt_l, rcm_l, H1_prev=H1_prev_l)
+            if H1_est_l[:3, 3][0] >= rcm_l[0]:
+                continue
 
-        if H1_est_l[:3, 3][0] >= rcm_l[0]:
-            continue
+            H1_prev_l = H1_est_l.copy()
+            H1_est_l[:3, 3] += np.array([-0.1, 0.0, 0.0])
 
-        H1_prev_l = H1_est_l.copy()
-        H1_est_l[:3, 3] += np.array([-0.1, 0.0, 0.0])
+            L_tf_target.translation = H1_est_l[:3, 3]
 
-        L_tf_target.translation = H1_est_l[:3, 3]
+            L_tf_target.rotation = H1_est_l[:3, :3]
 
-        L_tf_target.rotation = H1_est_l[:3, :3]
-
-        print(f" IK process time: {time.time()-t0:.4f}s")
+            # print(f" IK process time: {time.time()-t0:.4f}s")
         # L_tf_target.rotation = Rotation.from_quat(_delta_rot_l).as_matrix()
+
+
+        ################# if in direct control mode ########################
+        elif _mode == ControlMode.DIRECT:   
+            
+            # positions: 
+            L_tf_target.translation = base_pos_l[:3, 3] + _delta_pos_l * 1.5
+            R_tf_target.translation = base_pos_r[:3, 3] + _delta_pos_r * 1.5
+
+            # orientations: use your accumulated relative quats (_delta_rot_* is [x,y,z,w])
+            L_tf_target.rotation = Rotation.from_quat(_delta_rot_l).as_matrix()
+            R_tf_target.rotation = Rotation.from_quat(_delta_rot_r).as_matrix()
+
 
         if arm_ik.Visualization and arm_ik.vis is not None:
         
@@ -1070,18 +1268,6 @@ if __name__ == "__main__":
             T_rcm_l[:3, 3] = rcm_l
             arm_ik.vis.viewer["RCM_point_l"].set_transform(T_rcm_l)
 
-        # except Exception as e:
-        #     print(f"Error in reading: {e}")
-     
-        ##############################################################################
-
-        rotation_l = R.from_quat(_delta_rot_l)
-        _rot_l = rotation_l.as_euler('xyz', degrees=True)
-        rotation_r = R.from_quat(_delta_rot_r)
-        _rot_r = rotation_r.as_euler('xyz', degrees=True)
-        # print("left arm", _delta_pos_l, _rot_l)
-        # print("Right arm",_delta_pos_r, _rot_r)
-
         current_lr_arm_q = g1arm.get_current_dual_arm_q()
         current_lr_arm_dq = g1arm.get_current_dual_arm_dq()
 
@@ -1089,8 +1275,6 @@ if __name__ == "__main__":
         dt = now - prev_time
         prev_time = now
 
-        L_tf_target = smoother_L.step(L_tf_target, dt)
-        R_tf_target = smoother_R.step(R_tf_target, dt)
 
         # IK on smoothed targets
         sol_q, sol_tauff = arm_ik.solve_ik(
@@ -1099,19 +1283,16 @@ if __name__ == "__main__":
             current_lr_arm_q,
             current_lr_arm_dq,
         )
-        #         sol_q, sol_tauff = arm_ik.solve_ik(
-        #     L_tf_target.homogeneous,
-        #     R_tf_target.homogeneous,
-        #     current_lr_arm_q,
-        #     current_lr_arm_dq,
-        # )
 
-        # TODO: add joint angle limits check or reprojecftion error check
         
         T_L_curr, T_R_curr = arm_ik.get_current_ee_poses()   # get current actual end-effector poses
+        pose_pub_node.publish_all(H_head, T_L_curr, T_R_curr)
 
         # reprojection error check:
         # pos_err_l, rot_err_l = arm_ik.get_reprojection_err(T_L_curr, L_tf_target.homogeneous)
+        # TODO: when reprojection error is too high, clip the delta pose
+        # TODO: figure out a way then the solved poses are beyond the rcm
+
         if pos_err_r is None or rot_err_r is None:
             pos_err_r, rot_err_r = 0.0, 0.0
             t1p, t2p = 0.0, 0.0
@@ -1119,11 +1300,17 @@ if __name__ == "__main__":
             pos_err_r, rot_err_r = get_reprojection_err(T_R_curr, R_tf_target.homogeneous)
             # add a check of the angles
             reproj_Ps2, _, t1p, t2p = compute_shaft2_pose(R_tf_target.homogeneous, rcm_r, return_intermediate = True)
+
         # print(f"Left reprojection error: {pos_err_l:.4f} m, {rot_err_l:.4f} deg")
         # print(f"Right reprojection error: {pos_err_r:.4f} m, {rot_err_r:.4f} deg")
-        if pos_err_r >  0.15 or t1p > 0.90 * np.pi /2 or t2p > 0.90 * np.pi /2:
-            print("Reprojection error too high, skipping IK solve.")
-            continue
+        if pos_err_r >  0.10 or rot_err_r > 25 or t1p > 0.90 * np.pi /2 or t2p > 0.90 * np.pi /2:
+            print(f"Right reprojection error: {pos_err_r:.4f} m, {rot_err_r:.4f} deg, t1p: {t1p:.4f} rad, t2p: {t2p:.4f} rad")
+            print("Reprojection error too high, clipping delta.")
+            clip_r = True
+            prev_delta_pos_r = curr_delta_pos_r.copy()
+            # continue
+        elif pos_err_r <  0.07 and rot_err_r < 20 and t1p < 0.80 * np.pi /2 and t2p < 0.80 * np.pi /2:
+            val_delta_pos_r = _delta_pos_r.copy()
 
         if pos_err_l is None or rot_err_l is None:
             pos_err_l, rot_err_l = 0.0, 0.0
@@ -1132,33 +1319,21 @@ if __name__ == "__main__":
             pos_err_l, rot_err_l = get_reprojection_err(T_L_curr, L_tf_target.homogeneous)
             reproj_Ps2, _, t1p, t2p = compute_shaft2_pose(L_tf_target.homogeneous, rcm_l, return_intermediate = True)
         # print(f"Left reprojection error: {pos_err_l:.4f} m, {rot_err_l:.4f} deg")
-        if pos_err_l >  0.15 or t1p > 0.90 * np.pi /2 or t2p > 0.90 * np.pi /2:
-            print("Reprojection error too high, skipping IK solve.")
-            continue
-            
-        # --- mini interpolation inside this main loop iteration ---
-        # N_SUB = 3 # small fixed number of mini-steps
-        # q0 = current_lr_arm_q
-        # delta = sol_q - q0
+        if pos_err_l >  0.10 or rot_err_l > 25 or t1p > 0.90 * np.pi /2 or t2p > 0.90 * np.pi /2:
+            print(f"Left reprojection error: {pos_err_l:.4f} m, {rot_err_l:.4f} deg, t1p: {t1p:.4f} rad, t2p: {t2p:.4f} rad")
+            print("Reprojection error too high, clipping delta.")
+            # Looks like the cause is the val_delta_pos_l would still slightly exceed the limit, maybe need to do a extra check before saving it.
+            # Got it!!
+            prev_delta_pos_l = curr_delta_pos_l.copy()
+            clip_l = True
+            # continue
+        elif pos_err_l <  0.07 and rot_err_l < 20 and t1p < 0.80 * np.pi /2 and t2p < 0.80 * np.pi /2:
+            val_delta_pos_l = _delta_pos_l.copy()
+        #  print(f"check clipping status clip_l: {clip_l}, clip_r: {clip_r}")
 
-        # for k in range(1, N_SUB + 1):
-        #     tau = k / N_SUB  # 0→1
-        #     # if you already defined _min_jerk_s_and_ds(tau), use min-jerk:
-        #     s, _ = _min_jerk_s_and_ds(tau)
-        #     # if you prefer linear, replace previous line with: s = tau
-        #     q_cmd = q0 + delta * s
-        #     g1arm.ctrl_dual_arm(q_cmd, sol_tauff)
-        #     time.sleep(g1arm.control_dt)
-
-        # # optional final send to land exactly on target (keep or remove)
-        # g1arm.ctrl_dual_arm(sol_q, sol_tauff)
-
-        
         g1arm.ctrl_dual_arm(sol_q, sol_tauff)
 
-
-
-        print("total time:", time.time() - start)
+        # print("total time:", time.time() - start)
         time.sleep(0.005)
 
     footpedal_subscriber.destroy_node()

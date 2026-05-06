@@ -100,7 +100,7 @@ class FootpedalSubscriber(Node):
 
 
 class G1_29_ArmIK:
-    def __init__(self, Unit_Test=False, Visualization = False):
+    def __init__(self, Unit_Test=False, Visualization=False):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
 
         self.Unit_Test = Unit_Test
@@ -170,7 +170,6 @@ class G1_29_ArmIK:
             )
         )
 
-        # self.reduced_robot.rebuildData()
         # for i in range(self.reduced_robot.model.nframes):
         #     frame = self.reduced_robot.model.frames[i]
         #     frame_id = self.reduced_robot.model.getFrameId(frame.name)
@@ -238,27 +237,11 @@ class G1_29_ArmIK:
                 self.reduced_robot.model.upperPositionLimit,
             )
         )
-
-        self.q_lower = self.reduced_robot.model.lowerPositionLimit.copy()
-        self.q_upper = self.reduced_robot.model.upperPositionLimit.copy()
-        self.q_center = 0.5 * (self.q_lower + self.q_upper)
-        self.posture_cost = casadi.sumsqr(self.var_q - self.q_center)
-
-
-        # manipulability at neutral posture as "good" reference
-        q_neutral = pin.neutral(self.reduced_robot.model)
-        self.w_ref = self._compute_manipulability(q_neutral)
-        if self.w_ref < 1e-6:
-            self.w_ref = 1.0  # avoid division by zero later
-
-
-
         self.opti.minimize(
             50 * self.translational_cost
             + self.rotation_cost
             + 0.02 * self.regularization_cost
             + 0.1 * self.smooth_cost
-            + 0.1 * self.posture_cost
         )
 
         opts = {
@@ -334,28 +317,7 @@ class G1_29_ArmIK:
                         mg.LineBasicMaterial(linewidth=axis_width, vertexColors=True),
                     )
                 )
-            
-
-            self.vis.viewer["instrument_handle_r"].set_object(  
-                mg.LineSegments(
-                    mg.PointsGeometry(
-                        position=axis_length * FRAME_AXIS_POSITIONS,
-                        color=FRAME_AXIS_COLORS,
-                    ),
-                    mg.LineBasicMaterial(linewidth=axis_width, vertexColors=True),
-                )
-            )
-
-            self.vis.viewer["instrument_handle_l"].set_object(
-                mg.LineSegments(
-                    mg.PointsGeometry(
-                        position=axis_length * FRAME_AXIS_POSITIONS,
-                        color=FRAME_AXIS_COLORS,
-                    ),
-                    mg.LineBasicMaterial(linewidth=axis_width, vertexColors=True),
-                )
-            )
-
+                
             self.vis.viewer["RCM_point"].set_object(
                 mg.Sphere(0.01),  # radius of the sphere (adjust as needed)
                 mg.MeshLambertMaterial(color=0x00FF00),  # green color
@@ -376,156 +338,6 @@ class G1_29_ArmIK:
                 mg.Sphere(0.01),  # radius of the sphere (adjust as needed)
                 mg.MeshLambertMaterial(color=0x00FF00),  # green color
             )
-
-
-      
-
-    # def step_nullspace(
-    #     self,
-    #     left_wrist,
-    #     right_wrist,
-    #     current_lr_arm_motor_q=None,
-    #     current_lr_arm_motor_dq=None,
-    #     dt=0.005,
-    #     k_task_pos=50.0,
-    #     k_task_rot=5.0,
-    #     k_posture=0.5,
-    #     damping=1e-4,
-    # ):
-    #     model = self.reduced_robot.model
-    #     data  = self.reduced_robot.data
-
-    #     if current_lr_arm_motor_q is None:
-    #         q = self.init_data.copy()
-    #     else:
-    #         q = current_lr_arm_motor_q.copy()
-
-    #     # update forward kinematics + frames
-    #     pin.forwardKinematics(model, data, q)
-    #     pin.updateFramePlacements(model, data)
-
-    #     # Get EE frame placements
-    #     oMf_L = data.oMf[self.L_hand_id]
-    #     oMf_R = data.oMf[self.R_hand_id]
-
-    #     # Desired
-    #     p_L_des = left_wrist[:3, 3]
-    #     R_L_des = left_wrist[:3, :3]
-    #     p_R_des = right_wrist[:3, 3]
-    #     R_R_des = right_wrist[:3, :3]
-
-    #     # Current
-    #     p_L = oMf_L.translation
-    #     R_L = oMf_L.rotation
-    #     p_R = oMf_R.translation
-    #     R_R = oMf_R.rotation
-
-    #     # Task errors
-    #     e_p_L = p_L_des - p_L
-    #     e_R_L = pin.log3(R_L.T @ R_L_des)
-
-    #     e_p_R = p_R_des - p_R
-    #     e_R_R = pin.log3(R_R.T @ R_R_des)
-
-    #     e_task = np.concatenate([
-    #         k_task_pos * e_p_L,
-    #         k_task_rot * e_R_L,
-    #         k_task_pos * e_p_R,
-    #         k_task_rot * e_R_R,
-    #     ])
-
-    #     # Compute joint Jacobians first
-    #     pin.computeJointJacobians(model, data, q)
-
-    #     # Frame Jacobians via pin.getFrameJacobian
-    #     J_L6 = pin.getFrameJacobian(
-    #         model, data, self.L_hand_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
-    #     )  # 6 x nv
-
-    #     J_R6 = pin.getFrameJacobian(
-    #         model, data, self.R_hand_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
-    #     )  # 6 x nv
-
-    #     J = np.vstack([J_L6, J_R6])  # 12 x nv
-
-    #     # Damped pseudoinverse
-    #     JJt = J @ J.T
-    #     J_pinv = J.T @ np.linalg.inv(JJt + damping * np.eye(JJt.shape[0]))
-
-    #     xdot_des = e_task
-    #     qdot_task = J_pinv @ xdot_des
-
-    #     q_lower = model.lowerPositionLimit
-    #     q_upper = model.upperPositionLimit
-    #     q_center = 0.5 * (q_lower + q_upper)
-
-    #     qdot_posture = k_posture * (q_center - q)
-
-    #     N = np.eye(model.nv) - J_pinv @ J
-    #     qdot = qdot_task + N @ qdot_posture
-
-    #     q_next = q + qdot * dt
-    #     q_next = np.minimum(np.maximum(q_next, q_lower), q_upper)
-
-    #     self.smooth_filter.add_data(q_next)
-    #     q_next = self.smooth_filter.filtered_data
-    #     self.init_data = q_next
-
-    #     if current_lr_arm_motor_dq is not None:
-    #         v = current_lr_arm_motor_dq * 0.0
-    #     else:
-    #         v = np.zeros(model.nv)
-    #     sol_tauff = pin.rnea(model, data, q_next, v, np.zeros(model.nv))
-
-    #     if self.Visualization:
-    #         self.vis.display(q_next)
-
-    #     return q_next, sol_tauff
-
-
-    def _compute_manipulability(self, q):
-        """
-        Yoshikawa manipulability for both arms (translation part only).
-        Returns min(manip_left, manip_right) as a scalar.
-        """
-        model = self.reduced_robot.model
-        data  = self.reduced_robot.data
-
-        # ensure Jacobians are up to date
-        pin.computeJointJacobians(model, data, q)
-
-        # 6xnv Jacobians for each EE, LOCAL_WORLD_ALIGNED frame
-        J_L6 = pin.getFrameJacobian(
-            model, data, self.L_hand_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
-        )
-        J_R6 = pin.getFrameJacobian(
-            model, data, self.R_hand_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
-        )
-
-        # use translational part (first 3 rows)
-        J_L = J_L6[:3, :]
-        J_R = J_R6[:3, :]
-
-        def _w(J):
-            JJt = J @ J.T
-            det_JJt = np.linalg.det(JJt)
-            det_JJt = max(det_JJt, 0.0)  # numerical guard
-            return float(np.sqrt(det_JJt))
-
-        w_L = _w(J_L)
-        w_R = _w(J_R)
-        return min(w_L, w_R)  # conservative: take worst arm
-
-    def manipulability_score(self, q):
-        """
-        Returns a normalized manipulability score in [0, 1]:
-          1 = as good as neutral (or better),
-          0 = very low manipulability (near singular).
-        """
-        w = self._compute_manipulability(q)
-        score = np.clip(w / self.w_ref, 0.0, 1.0)
-        return float(score)
-
 
 
     ######################################################################
@@ -1029,7 +841,7 @@ if __name__ == "__main__":
             H1_init[:3, :3] = rot_rcm # point to rcm
             print(f"rotation check: {rot_rcm @ np.array([1, 0, 0])}")
             print(f"rcm: {rcm}")
-            Ps2_init, _, _, _ = compute_shaft2_pose(H1_init, rcm, return_intermediate=False)
+            Ps2_init = compute_shaft2_pose(H1_init, rcm, return_intermediate=False)
             zero_pos_ps2 = Ps2_init[:3, 3]
         ################ new adjustments Aug 11 ##########################
 

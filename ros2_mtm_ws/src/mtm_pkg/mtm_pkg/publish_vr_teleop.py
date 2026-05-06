@@ -6,6 +6,7 @@ from sensor_msgs.msg import Joy
 import numpy as np
 from typing import Dict, Tuple, Any
 from oculus_reader.reader import OculusReader
+from sensor_msgs.msg import JointState
 
 def quat_from_rot(R: np.ndarray) -> Tuple[float, float, float, float]:
     """Robust rotation-matrix → quaternion (w, x, y, z)."""
@@ -85,6 +86,25 @@ def pose_from_T(T: np.ndarray, frame_id: str) -> PoseStamped:
     ps.pose.orientation.z = qz
     return ps
 
+
+def _to_scalar01(v, default=0.0):
+    # take first element if tuple/list/ndarray
+    if isinstance(v, (tuple, list, np.ndarray)):
+        if len(v) == 0:
+            return float(default)
+        v = v[0]
+    # map bools to 0/1
+    if isinstance(v, bool):
+        v = 1.0 if v else 0.0
+    # try to cast to float, fallback to default
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        v = float(default)
+    # clamp to [0,1]
+    return max(0.0, min(1.0, v))
+
+
 class VrToDvrkBridge(Node):
     """
     Bridges your VR packet:
@@ -101,6 +121,9 @@ class VrToDvrkBridge(Node):
         self.pub_mtmr = self.create_publisher(PoseStamped, "/MTMR/measured_cp", 10)
         self.pub_mtml = self.create_publisher(PoseStamped, "/MTML/measured_cp", 10)
         self.pub_clutch = self.create_publisher(Joy, "/footpedals/clutch", 10)
+        self.pub_RG = self.create_publisher(JointState, '/MTMR/gripper/measured_js', 10)
+        self.pub_LG = self.create_publisher(JointState, '/MTML/gripper/measured_js', 10)
+
 
         # Publish at 60 Hz (adjust to your VR stream rate)
         self.timer = self.create_timer(1.0 / 30.0, self.tick)
@@ -131,13 +154,36 @@ class VrToDvrkBridge(Node):
 
             # Clutch mapping: use left grip ("LG") → buttons[0]
             # (Change "LG" → your preferred button, e.g., "RG" or "LTr")
-            lg = buttons.get("LG", False)
-            clutch_pressed = int(bool(lg))  # 1 if pressed, else 0
+            ltr = buttons.get("LTr", False)
+            clutch_pressed = int(bool(ltr))  # 1 if pressed, else 0
 
             joy = Joy()
             joy.axes = []        # your subscriber ignores axes
             joy.buttons = [clutch_pressed]  # subscriber reads buttons[0]
             self.pub_clutch.publish(joy)
+
+            raw_right = buttons.get("rightGrip", 0.0)
+            raw_left  = buttons.get("leftGrip", 0.0)
+
+            r01 = _to_scalar01(raw_right)
+            l01 = _to_scalar01(raw_left)
+
+            # maps
+            right_mapped = -2.0 * r01 + 1.0          # 0→1  ->  -1→1
+            left_mapped  = -2.8 * l01 + 1.0          # 0→1  ->  -1.8→1
+
+            # publish
+            msg_R = JointState()
+            msg_R.name = ['right_gripper_joint']
+            msg_R.position = [float(right_mapped)]
+            self.pub_RG.publish(msg_R)
+
+            msg_L = JointState()
+            msg_L.name = ['left_gripper_joint']
+            msg_L.position = [float(left_mapped)]
+            self.pub_LG.publish(msg_L)
+
+
         except Exception as e:
             self.get_logger().error(f"Error in tick: {e}")
 

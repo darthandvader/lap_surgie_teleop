@@ -6,8 +6,8 @@ from sensor_msgs.msg import Joy, JointState
 from geometry_msgs.msg import WrenchStamped, Vector3, Quaternion, PoseStamped
 from std_msgs.msg import Bool, Empty
 from pynput import keyboard
-from robot_arm_both_arms import point_to_rcm
-from scipy.spatial.transform import Rotation as R
+from robot_arm_both_arms_user_study import point_to_rcm
+
 
 class SendDummyTipPose(Node):
 
@@ -55,8 +55,7 @@ class SendDummyTipPose(Node):
         self.publish_lock_orientation_l = self.create_publisher(Quaternion, '/MTML/lock_orientation', 10)
         self.publish_unlock_orientation_l = self.create_publisher(Empty, '/MTML/unlock_orientation', 10)
         self.publish_reset_joint_l = self.create_publisher(JointState, '/MTML/servo_jp', 10)
-        self.publish_target_pose_r = self.create_publisher(PoseStamped, '/MTMR/move_cp', 10)
-        self.publish_target_pose_l = self.create_publisher(PoseStamped, '/MTML/move_cp', 10)
+
         self.coag_pub = self.create_publisher(Joy, "/footpedals/coag", 10)
         self.clutch_pub = self.create_publisher(Joy, "/footpedals/clutch", 10)
 
@@ -98,23 +97,11 @@ class SendDummyTipPose(Node):
         msg.buttons = [int(value)]
         publisher.publish(msg)
 
-    def reset_mtm_joints(self, v_r, v_l):
-
-        R_WORLD_TO_MTM = R.from_euler('z', -90, degrees=True).as_matrix()
-        rot_rcm_l =  point_to_rcm(v_l) @ R_WORLD_TO_MTM 
-        rot_rcm_r =  point_to_rcm(v_r) @ R_WORLD_TO_MTM 
-
-        q_l = R.from_matrix(rot_rcm_l).as_quat()  # [x, y, z, w]
-        q_r = R.from_matrix(rot_rcm_r).as_quat()
-        
+    def reset_mtm_joints(self):
         r_target = [0.0] * 7
-        # r_target[-2] = 0.4
+        r_target[-2] = 0.4
         l_target = [0.0] * 7
-        # l_target[-2] = -0.4
-
-        # r_target[:4] = q_r.tolist()  # inject quaternion into last 4 slots
-        # l_target[:4] = q_l.tolist()  # inject quaternion into last 4 slots
-
+        l_target[-2] = -0.4
         steps = 200
         sleep_time = 0.01
 
@@ -132,35 +119,7 @@ class SendDummyTipPose(Node):
 
             time.sleep(sleep_time)
 
-        t0 = time.time()
-        while (self.latest_position_l is None or self.latest_position_r is None) and (time.time() - t0 < 0.5):
-            rclpy.spin_once(self, timeout_sec=0.05)
-
-        # Fallback to zeros if still None
-        pL = self.latest_position_l if self.latest_position_l is not None else np.array([0.0, 0.0, 0.0])
-        pR = self.latest_position_r if self.latest_position_r is not None else np.array([0.0, 0.0, 0.0])
-        print("Latest positions before reset:", pL, pR)
-
-        # Build PoseStamped messages
-        target_l = PoseStamped()
-        target_l.header.stamp = self.get_clock().now().to_msg()
-        # If you have a known frame, set it here (e.g., "base" or "world")
-        # target_l.header.frame_id = "world"
-        target_l.pose.position.x, target_l.pose.position.y, target_l.pose.position.z = pL.tolist()
-        target_l.pose.orientation = Quaternion(x=float(q_l[0]), y=float(q_l[1]), z=float(q_l[2]), w=float(q_l[3]))
-
-        target_r = PoseStamped()
-        target_r.header.stamp = self.get_clock().now().to_msg()
-        # target_r.header.frame_id = "world"
-        target_r.pose.position.x, target_r.pose.position.y, target_r.pose.position.z = pR.tolist()
-        target_r.pose.orientation = Quaternion(x=float(q_r[0]), y=float(q_r[1]), z=float(q_r[2]), w=float(q_r[3]))
-
-        self.publish_target_pose_l.publish(target_l)
-        self.publish_target_pose_r.publish(target_r)
-
-        self.get_logger().info("MTM reset complete; orientations set via move_cp to point toward RCM.")
-
-        
+            
     def timer_function(self):
         
         self.publish_joy(self.coag_pub, self.key_states['c'])
@@ -245,15 +204,9 @@ class SendDummyTipPose(Node):
 
     def pose_callback_l(self, msg: PoseStamped):
         self.latest_orientation_l = msg.pose.orientation
-        self.latest_position_l = np.array([msg.pose.position.x,
-                                       msg.pose.position.y,
-                                       msg.pose.position.z], dtype=float)
-        
+
     def pose_callback_r(self, msg: PoseStamped):
         self.latest_orientation_r = msg.pose.orientation
-        self.latest_position_r = np.array([msg.pose.position.x,
-                                       msg.pose.position.y,
-                                       msg.pose.position.z], dtype=float)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -264,13 +217,7 @@ def main(args=None):
         rclpy.spin_once(node, timeout_sec=0.1)
 
     # Smoothly reset MTMs to zero position
-    zero_pose_l = np.array([0.35, 0.2, 0.1])
-    zero_pose_r = np.array([0.35, -0.2, 0.1])
-    rcm_r = np.array([0.71, -0.2, 0.13])
-    rcm_l = np.array([0.71, 0.1, 0.13])
-    v_l = rcm_l - zero_pose_l
-    v_r = rcm_r - zero_pose_r
-    node.reset_mtm_joints(v_r, v_l)
+    node.reset_mtm_joints()
 
     # Enter normal spin loop
     rclpy.spin(node)

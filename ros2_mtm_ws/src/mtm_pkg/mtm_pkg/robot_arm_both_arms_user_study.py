@@ -57,6 +57,46 @@ from scipy.spatial.transform import Rotation as R
 from rcm_control import *
 
 
+try:
+    import simpleaudio as sa  # pip install simpleaudio
+    HAVE_AUDIO = True
+except ImportError:
+    HAVE_AUDIO = False
+
+class ControlMode(IntEnum):
+    RCM = 0
+    DIRECT = 1
+
+control_mode = ControlMode.RCM
+_mode_lock = threading.Lock()
+
+# def _on_key_press(key):
+#     global control_mode
+#     try:
+#         if getattr(key, "char", None) == "s":
+#             with _mode_lock:
+#                 control_mode = (ControlMode.DIRECT
+#                                 if control_mode == ControlMode.RCM
+#                                 else ControlMode.RCM)
+#                 print(f"[MODE] Switched to: {control_mode.name}")
+#     except Exception:
+#         pass  # ignore non-character keys
+
+
+def _on_key_press(key):
+    global control_mode
+    if hasattr(key, "char") and key.char == "s":
+        with _mode_lock:
+            control_mode = (ControlMode.DIRECT
+                            if control_mode == ControlMode.RCM
+                            else ControlMode.RCM)
+            print(f"[MODE] Switched to: {control_mode.name}")
+
+# start the keyboard listener once
+_key_listener = keyboard.Listener(on_press=_on_key_press)
+_key_listener.daemon = True
+_key_listener.start()
+
 
 
 
@@ -234,10 +274,10 @@ class G1_29_ArmController:
 
         self.kp_high = 300.0
         self.kd_high = 5.0
-        self.kp_low = 60.0
+        self.kp_low = 65.0
         self.kd_low = 3.0
         self.kp_wrist = 55.0
-        self.kd_wrist = 3.0
+        self.kd_wrist = 1.5
 
         self.all_motor_q = None
         self.arm_velocity_limit = 20.0
@@ -685,12 +725,42 @@ def point_to_rcm(v, up_hint=np.array([0,1,0])):
     y = np.cross(z, x)
     return np.column_stack((x, y, z))   # columns are body axes in WORLD
 
-def _min_jerk_s_and_ds(tau):
-    # tau in [0,1]
-    s  = 10*tau**3 - 15*tau**4 + 6*tau**5
-    ds = 30*tau**2 - 60*tau**3 + 30*tau**4
-    return s, ds
+def play_tone(freq, duration=0.03):
+    """
+    Play a short sine tone asynchronously.
+    If simpleaudio is not available, just print a debug line.
+    """
+    if not HAVE_AUDIO:
+        # Fallback: terminal bell + debug line
+        print(f"\a[MANIP BEEP] f={freq:.0f} Hz")
+        return
 
+    fs = 44100
+    t = np.linspace(0, duration, int(fs * duration), False)
+    tone = np.sin(2 * np.pi * freq * t)
+    audio = (tone * 32767).astype(np.int16)
+    sa.play_buffer(audio, 1, 2, fs)
+
+
+def compute_joint_limit_danger(q, q_lower, q_upper):
+    """
+    q, q_lower, q_upper: 1D numpy arrays (same shape).
+    Returns scalar in [0,1], where 0 = very safe, 1 = at the limit.
+    """
+    # distance to closest limit for each joint
+    margin = np.minimum(q - q_lower, q_upper - q)  # shape (n,)
+    span   = q_upper - q_lower                     # shape (n,)
+
+    # normalized margin: 0 (at limit) to 0.5 (at center)
+    safe_ratio = np.clip(margin / span, 0.0, 0.5)
+
+    # worst joint defines danger: 0 (safe) -> 1 (worst at limit)
+    worst_safe = safe_ratio.min()          # smallest margin across joints
+    danger = 1.0 - 2.0 * worst_safe        # 0 if center, 1 if at limit
+    return float(np.clip(danger, 0.0, 1.0))
+
+
+last_beep_time = 0.0  
 
 if __name__ == "__main__":
     from robot_arm_ik import G1_29_ArmIK
@@ -703,18 +773,18 @@ if __name__ == "__main__":
     footpedal_subscriber_ = FootpedalSubscriber_()
     rcm_subscriber = RCMsuscriber()
 
-    arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization = False)
+    arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization = False )
     g1arm = G1_29_ArmController()
 
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.15, +0.2, 0.05]),
+        np.array([0.1, +0.2, 0.05]),
     )
 
     R_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.15, -0.2, 0.05]),
+        np.array([0.1, -0.2, 0.05]),
     )
 
 
@@ -754,8 +824,8 @@ if __name__ == "__main__":
     val_delta_pos_r = None
     val_delta_pos_l = None
 
-    zero_pose_l = np.array([0.35, 0.2, 0.1])
-    zero_pose_r = np.array([0.35, -0.2, 0.1])
+    zero_pose_l = np.array([0.25, 0.17, 0.07])
+    zero_pose_r = np.array([0.25, -0.17, 0.07])
 
     time.sleep(2)
 
@@ -806,12 +876,72 @@ if __name__ == "__main__":
 
     rcm_l = None
     rcm_r = None
-
-    smoother_R = SE3Smoother(tau_pos=0.02, tau_rot=0.02)   # tune as needed
-    smoother_L = SE3Smoother(tau_pos=0.02, tau_rot=0.02)
     prev_time = time.perf_counter()
 
+
+   
+
+    last_mode = control_mode
+
+
+    # create an offset rotation matrix around z axis 
+    angle = np.deg2rad(0)
+    angle_r = np.deg2rad(0)
+    c, s = np.cos(angle), np.sin(angle)
+    c_r, s_r = np.cos(angle_r), np.sin(angle_r)
+    offset_rot_l = np.array([
+        [c, s, 0],
+        [-s, c, 0],
+        [0, 0, 1]
+    ])
+
+    # offset_rot_r = np.array([
+    #     [c, -s, 0],
+    #     [s, c, 0],
+    #     [0, 0, 1]
+    # ])
+    offset_rot_r = np.array([
+        [c_r, -s_r, 0],
+        [s_r, c_r, 0],
+        [0, 0, 1]
+    ])
+
+
+    offset_matrix_r = np.eye(4)
+    offset_matrix_r[:3, :3] = offset_rot_r
+    offset_matrix_l = np.eye(4)
+    offset_matrix_l[:3, :3] = offset_rot_l
+
+
+    # create an offset rotation matrix for around y axis
+    pitch_l = np.deg2rad(0)
+    c_y_l, s_y_l = np.cos(pitch_l), np.sin(pitch_l)
+    offset_rot_y = np.array([
+        [c_y_l, 0, s_y_l],
+        [0, 1, 0],
+        [-s_y_l, 0, c_y_l]
+    ])
+    pitch_offset_l = np.eye(4)
+    pitch_offset_l[:3, :3] = offset_rot_y
+
+    pitch_r = np.deg2rad(0)
+    c_y_r, s_y_r = np.cos(pitch_r), np.sin(pitch_r)
+    offset_rot_y_r = np.array([
+        [c_y_r, 0, s_y_r],  
+        [0, 1, 0],
+        [-s_y_r, 0, c_y_r]
+    ])
+    pitch_offset_r = np.eye(4)
+    pitch_offset_r[:3, :3] = offset_rot_y_r
+
+
+
+
+
     while True:
+
+        with _mode_lock:
+            _mode = control_mode
 
         start = time.time()
         clutch_pressed = False
@@ -831,9 +961,9 @@ if __name__ == "__main__":
                 footpedal_subscriber_.y_,
                 footpedal_subscriber_.z_,
                 footpedal_subscriber_.quat_[0],
-                footpedal_subscriber_.quat_[3],
+                -footpedal_subscriber_.quat_[1],
                 -footpedal_subscriber_.quat_[2],
-                footpedal_subscriber_.quat_[1],
+                footpedal_subscriber_.quat_[3],
             ]
         )
         tracker_2_pose = np.array(
@@ -842,9 +972,9 @@ if __name__ == "__main__":
                 footpedal_subscriber.y,
                 footpedal_subscriber.z,
                 footpedal_subscriber.quat[0],
-                footpedal_subscriber.quat[3],
+                -footpedal_subscriber.quat[1],
                 -footpedal_subscriber.quat[2],
-                footpedal_subscriber.quat[1],
+                footpedal_subscriber.quat[3],
             ]
         )
 
@@ -927,39 +1057,46 @@ if __name__ == "__main__":
             )
             track_clutch_button = True
 
-        # print("Current delta pos r:", curr_delta_pos_r, "Current delta rot r:", curr_delta_rot_r)
-        # print("Previous delta pos r:", prev_delta_pos_r, "Previous delta rot r:", prev_delta_rot_r)
 
-        # print("Current delta pos l:", curr_delta_pos_l, "Current delta rot l:", curr_delta_rot_l)
-        # print("Previous delta pos l:", prev_delta_pos_l, "Previous delta rot l:", prev_delta_rot_l)
+        ##########################initial poses############################################
+        if _mode != last_mode:
+            T_L_curr, T_R_curr = arm_ik.get_current_ee_poses() 
+            base_pos_l =  T_L_curr.copy()
+            base_pos_r =  T_R_curr.copy()
+            last_mode = _mode
+            print(f"[MODE] Switched to: {_mode.name}")
+            # clear deltas
+            _delta_pos_l = np.zeros(3)
+            _delta_rot_l = np.array([0, 0, 0, 1], dtype=np.float64)
+            _delta_pos_r = np.zeros(3)
+            _delta_rot_r = np.array([0, 0, 0, 1], dtype=np.float64)
+            prev_delta_pos_l, prev_delta_rot_l = (
+                curr_delta_pos_l.copy(),
+                curr_delta_rot_l.copy(),
+            )   
+            prev_delta_pos_r, prev_delta_rot_r = (
+                curr_delta_pos_r.copy(),    
+                curr_delta_rot_r.copy(),
+            )
 
-        ##########################Right arm############################################
         if clip_r and val_delta_pos_r is not None:
             _delta_pos_r = val_delta_pos_r
             clip_r = False
         else:
             _delta_pos_r += (curr_delta_pos_r - prev_delta_pos_r)*0.4
-
-
-        # _delta_rot_r += curr_delta_rot_r - prev_delta_rot_r
         _delta_rot_r = quat_multiply(
             _delta_rot_r,
             quat_conjugate(
                 quat_multiply(curr_delta_rot_r, quat_conjugate(prev_delta_rot_r))
             ),
         )
-
       
         curr_tracker_pose_1 = tracker_1_pose[3:]
         delta_tracker_pose_1 = quat_multiply(curr_tracker_pose_1, quat_conjugate(init_pose_tracker_1[3:]))
 
-
-
         curr_tracker_pose_2 = tracker_2_pose[3:]
         delta_tracker_pose_2 = quat_multiply(curr_tracker_pose_2, quat_conjugate(init_pose_tracker_2[3:]))
 
-
-        ##########################Left arm############################################
         if clip_l and val_delta_pos_l is not None:   
             _delta_pos_l = val_delta_pos_l
             clip_l = False
@@ -983,84 +1120,113 @@ if __name__ == "__main__":
         )
 
         if rcm_l is None and rcm_r is None:
-            rcm_r = np.array([rcm_subscriber.x, rcm_subscriber.y, rcm_subscriber.z]) + np.array([-0.1, 0.0, 0.0])
-            rcm_l = np.array([rcm_subscriber.x_, rcm_subscriber.y_, rcm_subscriber.z_]) + np.array([-0.1, 0.0, 0.0])
-        
+            rcm_r = np.array([rcm_subscriber.x, rcm_subscriber.y, rcm_subscriber.z]) 
+            rcm_l = np.array([rcm_subscriber.x_, rcm_subscriber.y_, rcm_subscriber.z_]) 
+     
         # rcm_r = np.array([0.71, -0.2, 0.13])
         # rcm_l = np.array([0.71, 0.1, 0.13])
         t0 = time.time()
-        print(f"before IK timer: {t0-start:.4f}s")
+        # print(f"before IK timer: {t0-start:.4f}s")
+
+        if _mode == ControlMode.RCM:
+
+   
 
 
-        ##########################Right arm############################################
-        if H1_init_r is None:
-            H1_init_r = np.eye(4)
-            H1_init_r[:3, 3] = zero_pose_r
-            rot_rcm_r = point_to_rcm(rcm_r - zero_pose_r)
-            # H1_init[:3, :3] = Rotation.from_quat( rot_rcm ).as_matrix()  # initially it's identity (mtm reset)
-            H1_init_r[:3, :3] = rot_rcm_r # point to rcm
-            Ps2_init_r, _, _, _ = compute_shaft2_pose(H1_init_r, rcm_r, return_intermediate=False)
-            zero_pos_ps2_r = Ps2_init_r[:3, 3]
 
-        Ps2_gt_r = np.eye(4)
-        zero_rot_ps2_r = Ps2_init_r[:3, :3]
-        # Ps2_gt_r[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) @ zero_rot_ps2_r  # use global rotation
-        Ps2_gt_r[:3, :3] =   zero_rot_ps2_r @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) # use global rotation
+            ##########################Right arm############################################
+            if H1_init_r is None:
+                H1_init_r = np.eye(4)
+                H1_init_r[:3, 3] = zero_pose_r
+                rot_rcm_r = point_to_rcm(rcm_r - zero_pose_r)
+                # H1_init[:3, :3] = Rotation.from_quat( rot_rcm ).as_matrix()  # initially it's identity (mtm reset)
+                H1_init_r[:3, :3] = rot_rcm_r # point to rcm
+                H1_init_r = H1_init_r @ offset_matrix_r @ pitch_offset_r
+                Ps2_init_r, _, _, _ = compute_shaft2_pose(H1_init_r, rcm_r, return_intermediate=False)
+                zero_pos_ps2_r = Ps2_init_r[:3, 3]
 
-        Ps2_gt_r[:3, 3] = zero_pos_ps2_r + _delta_pos_r
+            Ps2_gt_r = np.eye(4)
+            zero_rot_ps2_r = Ps2_init_r[:3, :3]
+            # Ps2_gt_r[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) @ zero_rot_ps2_r  # use global rotation
+            Ps2_gt_r[:3, :3] =   zero_rot_ps2_r @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_2).as_matrix()) # use global rotation
 
-        H1_est_r = invert_shaft2_pose_angle_limits(Ps2_gt_r, rcm_r, H1_prev=H1_prev_r)
+            Ps2_gt_r[:3, 3] = zero_pos_ps2_r + _delta_pos_r
 
-        if H1_est_r[:3, 3][0] >= rcm_r[0]:
-            print("Estimated H1 pose is beyond RCM.", H1_est_r[:3, 3][0], rcm_r[0])
-            continue
+            H1_est_r = invert_shaft2_pose_angle_limits(Ps2_gt_r, rcm_r, H1_prev=H1_prev_r)
 
-        H1_prev_r = H1_est_r.copy()
-        H1_est_r[:3, 3] += np.array([-0.1, 0.0, 0.0])  
+            if H1_est_r[:3, 3][0] >= rcm_r[0]:
+                print("Estimated H1 pose is beyond RCM.", H1_est_r[:3, 3][0], rcm_r[0])
+                continue
 
-        R_tf_target.translation = H1_est_r[
-            :3, 3
-        ] 
+            H1_prev_r = H1_est_r.copy()
 
-        R_tf_target.rotation = H1_est_r[:3, :3]
-        # R_tf_target.translation = zero_pose_r + _delta_pos_r
-        # R_tf_target.rotation = Rotation.from_quat(_delta_rot_r).as_matrix()
+            instrument_handle_r = H1_est_r.copy()
+
+            H1_est_r[:3, 3] += -0.1*H1_est_r[:3, 0] +0.02*H1_est_r[:3, 2] #np.array([-0.1, 0.0, -0.02])
+
+            R_tf_target.translation = H1_est_r[
+                :3, 3
+            ] 
+
+            R_tf_target.rotation = H1_est_r[:3, :3]
+            # R_tf_target.translation = zero_pose_r + _delta_pos_r
+            # R_tf_target.rotation = Rotation.from_quat(_delta_rot_r).as_matrix()
 
 
-        ##########################Left arm############################################
 
-        if H1_init_l is None:
-            H1_init_l = np.eye(4)
-            H1_init_l[:3, 3] = zero_pose_l
-            rot_rcm_l = point_to_rcm(rcm_l - zero_pose_l)
-            H1_init_l[:3, :3] = rot_rcm_l # point to rcm
-            Ps2_init_l, _, _, _ = compute_shaft2_pose(H1_init_l, rcm_l, return_intermediate=False)
-            zero_pos_ps2_l = Ps2_init_l[:3, 3]
 
-        Ps2_gt_l = np.eye(4)
-        zero_rot_ps2_l = Ps2_init_l[:3, :3]
-        # Ps2_gt_l[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) @ zero_rot_ps2_l  # use global rotation
-        Ps2_gt_l[:3, :3] =   zero_rot_ps2_l @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) # use global rotation
+        
+            ##########################Left arm############################################
+         
 
-        Ps2_gt_l[:3, 3] = zero_pos_ps2_l + _delta_pos_l
+            if H1_init_l is None:
+                H1_init_l = np.eye(4)
+                H1_init_l[:3, 3] = zero_pose_l
+                rot_rcm_l = point_to_rcm(rcm_l - zero_pose_l)
+                H1_init_l[:3, :3] = rot_rcm_l # point to rcm
+                H1_init_l = H1_init_l @ offset_matrix_l @ pitch_offset_l
+                Ps2_init_l, _, _, _ = compute_shaft2_pose(H1_init_l, rcm_l, return_intermediate=False)
+                zero_pos_ps2_l = Ps2_init_l[:3, 3]
 
-        H1_est_l = invert_shaft2_pose_angle_limits(Ps2_gt_l, rcm_l, H1_prev=H1_prev_l)
+            Ps2_gt_l = np.eye(4)
+            zero_rot_ps2_l = Ps2_init_l[:3, :3]
+            # Ps2_gt_l[:3, :3] =  np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) @ zero_rot_ps2_l  # use global rotation
+            Ps2_gt_l[:3, :3] =   zero_rot_ps2_l @ np.linalg.inv(Rotation.from_quat( delta_tracker_pose_1).as_matrix()) # use global rotation
 
-        if H1_est_l[:3, 3][0] >= rcm_l[0]:
-            continue
+            Ps2_gt_l[:3, 3] = zero_pos_ps2_l + _delta_pos_l
 
-        H1_prev_l = H1_est_l.copy()
-        H1_est_l[:3, 3] += np.array([-0.1, 0.0, 0.0])
+            H1_est_l = invert_shaft2_pose_angle_limits(Ps2_gt_l, rcm_l, H1_prev=H1_prev_l)
 
-        L_tf_target.translation = H1_est_l[:3, 3]
+            if H1_est_l[:3, 3][0] >= rcm_l[0]:
+                continue
 
-        L_tf_target.rotation = H1_est_l[:3, :3]
+            H1_prev_l = H1_est_l.copy()
+            instrument_handle_l = H1_est_l.copy()
+            H1_est_l[:3, 3] += -0.1*H1_est_l[:3, 0] -0.02*H1_est_l[:3, 2] #np.array([-0.1, 0.0, 0.02]) 
 
-        print(f" IK process time: {time.time()-t0:.4f}s")
+            L_tf_target.translation = H1_est_l[:3, 3]
+
+            L_tf_target.rotation = H1_est_l[:3, :3]
+
+            # print(f" IK process time: {time.time()-t0:.4f}s")
         # L_tf_target.rotation = Rotation.from_quat(_delta_rot_l).as_matrix()
 
+
+        ################# if in direct control mode ########################
+        elif _mode == ControlMode.DIRECT:   
+            
+            # positions: 
+            L_tf_target.translation = base_pos_l[:3, 3] + _delta_pos_l * 1.5
+            R_tf_target.translation = base_pos_r[:3, 3] + _delta_pos_r * 1.5
+
+            # orientations: use your accumulated relative quats (_delta_rot_* is [x,y,z,w])
+            L_tf_target.rotation = Rotation.from_quat(_delta_rot_l).as_matrix()
+            R_tf_target.rotation = Rotation.from_quat(_delta_rot_r).as_matrix()
+
+
         if arm_ik.Visualization and arm_ik.vis is not None:
-        
+
+
             arm_ik.vis.viewer["Ps2_gt"].set_transform(Ps2_gt_r)
             T_rcm_r = np.eye(4)
             T_rcm_r[:3, 3] = rcm_r
@@ -1071,12 +1237,34 @@ if __name__ == "__main__":
             T_rcm_l[:3, 3] = rcm_l
             arm_ik.vis.viewer["RCM_point_l"].set_transform(T_rcm_l)
 
+            arm_ik.vis.viewer["instrument_handle_r"].set_transform(instrument_handle_r)
+            arm_ik.vis.viewer["instrument_handle_l"].set_transform(instrument_handle_l)
         current_lr_arm_q = g1arm.get_current_dual_arm_q()
         current_lr_arm_dq = g1arm.get_current_dual_arm_dq()
 
         now = time.perf_counter()
         dt = now - prev_time
         prev_time = now
+
+
+        # beep when approaching joint limits
+
+         # ------------- manipulability-based audio feedback ----------------
+        # global last_beep_time
+        # normalized manipulability in [0,1]
+        manip_score = arm_ik.manipulability_score(current_lr_arm_q)
+        # danger: 0 = good, 1 = bad (near singular)
+        manip_danger = 1.0 - manip_score
+        print(f"[MANIP] score={manip_score:.3f}, danger={manip_danger:.3f}")
+        # only beep when it's actually getting bad
+        if manip_danger > 0.2:  # adjust threshold to taste
+            now_beep = time.time()
+            # throttle beeps to ~6-7 per second max
+            if now_beep - last_beep_time > 0.15:
+                # map danger [0,1] → frequency [400, 1600] Hz
+                freq = 400.0 + 1200.0 * manip_danger
+                play_tone(freq, duration=0.03)
+                last_beep_time = now_beep
 
 
         # IK on smoothed targets
@@ -1086,6 +1274,14 @@ if __name__ == "__main__":
             current_lr_arm_q,
             current_lr_arm_dq,
         )
+
+        # sol_q, sol_tauff = arm_ik.step_nullspace(
+        #     L_tf_target.homogeneous,
+        #     R_tf_target.homogeneous,
+        #     current_lr_arm_q,
+        #     current_lr_arm_dq,
+        #     dt=0.005,   # match your control loop period
+        # )
 
         
         T_L_curr, T_R_curr = arm_ik.get_current_ee_poses()   # get current actual end-effector poses
@@ -1109,8 +1305,9 @@ if __name__ == "__main__":
             print(f"Right reprojection error: {pos_err_r:.4f} m, {rot_err_r:.4f} deg, t1p: {t1p:.4f} rad, t2p: {t2p:.4f} rad")
             print("Reprojection error too high, clipping delta.")
             clip_r = True
+            prev_delta_pos_r = curr_delta_pos_r.copy()
             # continue
-        elif pos_err_r <  0.08 and rot_err_r < 20 and t1p < 0.85 * np.pi /2 and t2p < 0.85 * np.pi /2:
+        elif pos_err_r <  0.07 and rot_err_r < 20 and t1p < 0.80 * np.pi /2 and t2p < 0.80 * np.pi /2:
             val_delta_pos_r = _delta_pos_r.copy()
 
         if pos_err_l is None or rot_err_l is None:
@@ -1125,15 +1322,16 @@ if __name__ == "__main__":
             print("Reprojection error too high, clipping delta.")
             # Looks like the cause is the val_delta_pos_l would still slightly exceed the limit, maybe need to do a extra check before saving it.
             # Got it!!
+            prev_delta_pos_l = curr_delta_pos_l.copy()
             clip_l = True
             # continue
-        elif pos_err_l <  0.08 and rot_err_l < 20 and t1p < 0.85 * np.pi /2 and t2p < 0.85 * np.pi /2:
+        elif pos_err_l <  0.07 and rot_err_l < 20 and t1p < 0.80 * np.pi /2 and t2p < 0.80 * np.pi /2:
             val_delta_pos_l = _delta_pos_l.copy()
         #  print(f"check clipping status clip_l: {clip_l}, clip_r: {clip_r}")
 
         g1arm.ctrl_dual_arm(sol_q, sol_tauff)
 
-        print("total time:", time.time() - start)
+        # print("total time:", time.time() - start)
         time.sleep(0.005)
 
     footpedal_subscriber.destroy_node()
