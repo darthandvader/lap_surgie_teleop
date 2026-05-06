@@ -22,3 +22,5 @@ teleop/data/
 episode_0*
 *install*
 *log*
+.codex
+temp.zip
